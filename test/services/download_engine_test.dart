@@ -61,6 +61,65 @@ void main() {
   });
 
   test(
+    'downloads a range-capable large file using parallel segments',
+    () async {
+      final payload = List<int>.generate(128 * 1024, (index) => index % 251);
+      var segmentRequests = 0;
+      server.listen((request) async {
+        final requestedRange = request.headers.value(HttpHeaders.rangeHeader)!;
+        if (requestedRange == 'bytes=0-0') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-0/${payload.length}',
+          );
+          request.response.add([payload.first]);
+        } else {
+          segmentRequests++;
+          final match = RegExp(r'^bytes=(\d+)-(\d+)$')
+              .firstMatch(requestedRange)!;
+          final start = int.parse(match.group(1)!);
+          final end = int.parse(match.group(2)!);
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes $start-$end/${payload.length}',
+          );
+          request.response.add(payload.sublist(start, end + 1));
+        }
+        await request.response.close();
+      });
+      final progress = <int>[];
+
+      final result =
+          await HttpDownloadEngine(
+            segmentCount: 4,
+            minimumSegmentedSize: 1,
+          ).download(
+            task('segmented.bin'),
+            onProgress:
+                ({
+                  required receivedBytes,
+                  required totalBytes,
+                  required bytesPerSecond,
+                }) {
+                  progress.add(receivedBytes);
+                  expect(totalBytes, payload.length);
+                },
+          );
+
+      expect(result.totalBytes, payload.length);
+      expect(segmentRequests, 4);
+      expect(
+        await File('${temporaryDirectory.path}/segmented.bin').readAsBytes(),
+        payload,
+      );
+      expect(progress.last, payload.length);
+      expect(await Directory(temporaryDirectory.path).list().length, 1);
+    },
+  );
+
+  test(
     'uses a numbered filename when the destination already exists',
     () async {
       server.listen((request) async {

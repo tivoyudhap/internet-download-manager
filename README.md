@@ -22,5 +22,6 @@ On Windows, use `flutter run -d windows`. Build release versions with `flutter b
 The macOS and Windows Flutter desktop app includes a persisted download queue,
 HTTP/HTTPS downloads, transfer progress, pause, resume, cancel, and retry
 actions. Interrupted transfers resume with HTTP Range requests when the server
-supports them. Browser integration and segmented downloads are planned for
-later phases.
+supports them. Large files from servers that support HTTP Range are downloaded
+in parallel segments, and completed segments are retained so interrupted
+transfers can resume. Browser integration is planned for a later phase.

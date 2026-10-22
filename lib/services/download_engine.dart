@@ -80,10 +80,19 @@ abstract interface class DownloadEngine {
 }
 
 class HttpDownloadEngine implements DownloadEngine {
-  HttpDownloadEngine({HttpClient Function()? clientFactory})
-    : _clientFactory = clientFactory ?? HttpClient.new;
+  HttpDownloadEngine({
+    HttpClient Function()? clientFactory,
+    this.segmentCount = 4,
+    this.minimumSegmentedSize = 1024 * 1024,
+  }) : _clientFactory = clientFactory ?? HttpClient.new {
+    if (segmentCount < 2) {
+      throw ArgumentError.value(segmentCount, 'segmentCount');
+    }
+  }
 
   final HttpClient Function() _clientFactory;
+  final int segmentCount;
+  final int minimumSegmentedSize;
 
   @override
   Future<DownloadResult> download(
@@ -116,9 +125,49 @@ class HttpDownloadEngine implements DownloadEngine {
       final request = await _withCancellation(client.getUrl(uri), control);
       if (existingBytes > 0) {
         request.headers.set(HttpHeaders.rangeHeader, 'bytes=$existingBytes-');
+      } else {
+        // A one-byte range acts as a capability probe and can be reused as
+        // the first segment when the server supports byte ranges.
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-0');
       }
       control?.registerCancelHandler(() => request.abort());
-      final response = await _withCancellation(request.close(), control);
+      var response = await _withCancellation(request.close(), control);
+
+      if (existingBytes == 0 &&
+          response.statusCode == HttpStatus.partialContent) {
+        final probeRange = _parseContentRange(
+          response.headers.value(HttpHeaders.contentRangeHeader),
+        );
+        final probeBytes = await response.fold<int>(
+          0,
+          (count, chunk) => count + chunk.length,
+        );
+        if (probeRange != null &&
+            probeRange.start == 0 &&
+            probeRange.end == 0 &&
+            probeRange.total != null &&
+            probeRange.total! >= minimumSegmentedSize &&
+            probeRange.total! >= 2 &&
+            probeBytes == 1) {
+          return await _downloadSegments(
+            client: client,
+            uri: uri,
+            destination: destination,
+            partialFile: partialFile,
+            totalBytes: probeRange.total!,
+            onProgress: onProgress,
+            control: control,
+          );
+        }
+        // Small or malformed probe response: fetch the complete object using
+        // the existing single-stream path.
+        final restartedRequest = await _withCancellation(
+          client.getUrl(uri),
+          control,
+        );
+        control?.registerCancelHandler(() => restartedRequest.abort());
+        response = await _withCancellation(restartedRequest.close(), control);
+      }
 
       if (response.statusCode == HttpStatus.requestedRangeNotSatisfiable &&
           existingBytes > 0) {
@@ -271,6 +320,129 @@ class HttpDownloadEngine implements DownloadEngine {
   String _join(String directory, String fileName) =>
       '$directory${Platform.pathSeparator}$fileName';
 
+  Future<DownloadResult> _downloadSegments({
+    required HttpClient client,
+    required Uri uri,
+    required File destination,
+    required File partialFile,
+    required int totalBytes,
+    required DownloadProgressCallback onProgress,
+    required DownloadControl? control,
+  }) async {
+    final count = segmentCount.clamp(2, totalBytes);
+    final segments = <_DownloadSegment>[];
+    for (var index = 0; index < count; index++) {
+      final start = totalBytes * index ~/ count;
+      final end = totalBytes * (index + 1) ~/ count - 1;
+      segments.add(
+        _DownloadSegment(
+          start: start,
+          end: end,
+          file: File('${partialFile.path}.seg$index'),
+        ),
+      );
+    }
+
+    var receivedBytes = 0;
+    for (final segment in segments) {
+      if (!await segment.file.exists()) continue;
+      final size = await segment.file.length();
+      if (size > segment.length) {
+        await segment.file.delete();
+      } else {
+        receivedBytes += size;
+      }
+    }
+    final stopwatch = Stopwatch()..start();
+    await Future.wait(
+      segments.map((segment) async {
+        var offset = segment.start;
+        if (await segment.file.exists()) offset += await segment.file.length();
+        if (offset > segment.end) return;
+
+        final request = await _withCancellation(client.getUrl(uri), control);
+        request.headers.set(
+          HttpHeaders.rangeHeader,
+          'bytes=$offset-${segment.end}',
+        );
+        control?.registerCancelHandler(() => request.abort());
+        final response = await _withCancellation(request.close(), control);
+        final range = _parseContentRange(
+          response.headers.value(HttpHeaders.contentRangeHeader),
+        );
+        if (response.statusCode != HttpStatus.partialContent ||
+            range == null ||
+            range.start != offset ||
+            range.end != segment.end ||
+            range.total != totalBytes) {
+          await response.drain<void>();
+          throw const DownloadException(
+            'Server returned an invalid byte range for a segment.',
+          );
+        }
+
+        final sink = segment.file.openWrite(
+          mode: offset == segment.start ? FileMode.writeOnly : FileMode.append,
+        );
+        var segmentBytes = offset - segment.start;
+        final iterator = StreamIterator<List<int>>(response);
+        control?.registerCancelHandler(() => unawaited(iterator.cancel()));
+        try {
+          while (await _withCancellation(iterator.moveNext(), control)) {
+            await control?.waitUntilResumed();
+            final chunk = iterator.current;
+            sink.add(chunk);
+            segmentBytes += chunk.length;
+            receivedBytes += chunk.length;
+            final elapsed = stopwatch.elapsed;
+            onProgress(
+              receivedBytes: receivedBytes,
+              totalBytes: totalBytes,
+              bytesPerSecond: elapsed.inMicroseconds == 0
+                  ? 0
+                  : receivedBytes * 1000000 / elapsed.inMicroseconds,
+            );
+          }
+        } finally {
+          await sink.close();
+        }
+        if (segmentBytes != segment.length) {
+          throw const DownloadException('A download segment ended early.');
+        }
+      }),
+    );
+
+    await control?.waitUntilResumed();
+    final output = partialFile.openWrite(mode: FileMode.writeOnly);
+    try {
+      for (final segment in segments) {
+        await output.addStream(segment.file.openRead());
+      }
+      await output.flush();
+    } finally {
+      await output.close();
+    }
+    if (await partialFile.length() != totalBytes) {
+      throw const DownloadException('Combined download has an invalid size.');
+    }
+    await partialFile.rename(destination.path);
+    for (final segment in segments) {
+      if (await segment.file.exists()) await segment.file.delete();
+    }
+    final elapsed = stopwatch.elapsed;
+    onProgress(
+      receivedBytes: totalBytes,
+      totalBytes: totalBytes,
+      bytesPerSecond: elapsed.inMicroseconds == 0
+          ? 0
+          : totalBytes * 1000000 / elapsed.inMicroseconds,
+    );
+    return DownloadResult(
+      fileName: destination.path.split(Platform.pathSeparator).last,
+      totalBytes: totalBytes,
+    );
+  }
+
   _ContentRange? _parseContentRange(String? value) {
     final match = RegExp(r'^bytes (\d+)-(\d+)/(\d+|\*)$')
         .firstMatch(value ?? '');
@@ -307,6 +479,19 @@ class _ContentRange {
   final int start;
   final int end;
   final int? total;
+}
+
+class _DownloadSegment {
+  const _DownloadSegment({
+    required this.start,
+    required this.end,
+    required this.file,
+  });
+
+  final int start;
+  final int end;
+  final File file;
+  int get length => end - start + 1;
 }
 
 class DownloadException implements Exception {
