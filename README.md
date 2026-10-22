@@ -23,5 +23,8 @@ The macOS and Windows Flutter desktop app includes a persisted download queue,
 HTTP/HTTPS downloads, transfer progress, pause, resume, cancel, and retry
 actions. Interrupted transfers resume with HTTP Range requests when the server
 supports them. Large files from servers that support HTTP Range are downloaded
-in parallel segments, and completed segments are retained so interrupted
-transfers can resume. Browser integration is planned for a later phase.
+in parallel segments. Segments resume only when the server supplies a matching
+ETag or Last-Modified validator; when available, `If-Range` prevents combining
+bytes from different versions of a remote file. If the server supplies no
+validator, partial segments are discarded on the next attempt. Browser
+integration is planned for a later phase.

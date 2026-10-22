@@ -132,10 +132,14 @@ void main() {
       await savedSegment.writeAsBytes(
         payload.sublist(segmentLength, segmentLength * 2),
       );
+      await File('$partialPath.meta').writeAsString(
+        '${payload.length}\n${HttpHeaders.etagHeader}\n"stable-v1"',
+      );
       final requestedRanges = <String>[];
       server.listen((request) async {
         final requestedRange = request.headers.value(HttpHeaders.rangeHeader)!;
         requestedRanges.add(requestedRange);
+        request.response.headers.set(HttpHeaders.etagHeader, '"stable-v1"');
         if (requestedRange == 'bytes=0-0') {
           request.response.statusCode = HttpStatus.partialContent;
           request.response.headers.set(
@@ -273,10 +277,14 @@ void main() {
       payload.sublist(segmentLength * 2, segmentLength * 3),
     );
     await completeSegment3.writeAsBytes(payload.sublist(segmentLength * 3));
+    await File('$partialPath.meta').writeAsString(
+      '${payload.length}\n${HttpHeaders.etagHeader}\n"stable-v1"',
+    );
     final ranges = <String>[];
     server.listen((request) async {
       final range = request.headers.value(HttpHeaders.rangeHeader)!;
       ranges.add(range);
+      request.response.headers.set(HttpHeaders.etagHeader, '"stable-v1"');
       if (range == 'bytes=0-0') {
         request.response.statusCode = HttpStatus.partialContent;
         request.response.headers.set(
@@ -362,6 +370,7 @@ void main() {
       final start = int.parse(match.group(1)!);
       final end = int.parse(match.group(2)!);
       request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(HttpHeaders.etagHeader, '"retry-v1"');
       request.response.headers.set(
         HttpHeaders.contentRangeHeader,
         'bytes $start-$end/${payload.length}',
@@ -532,6 +541,274 @@ void main() {
             .readAsString(),
         payload,
       );
+    },
+  );
+
+  test(
+    'reuses saved segments only when the source ETag still matches',
+    () async {
+      final oldPayload = List<int>.filled(128 * 1024, 3);
+      final payload = List<int>.generate(128 * 1024, (index) => index % 181);
+      final download = task('changed-source.bin');
+      final partialPath =
+          '${temporaryDirectory.path}/changed-source.bin.${download.id}.part';
+      const segmentLength = 128 * 1024 ~/ 4;
+      final oldSegment = File('$partialPath.seg0');
+      await oldSegment.writeAsBytes(oldPayload.sublist(0, segmentLength));
+      await File(
+        '$partialPath.meta',
+      ).writeAsString('${payload.length}\n${HttpHeaders.etagHeader}\n"old-v1"');
+      final ranges = <String>[];
+      server.listen((request) async {
+        final range = request.headers.value(HttpHeaders.rangeHeader)!;
+        ranges.add(range);
+        if (range != 'bytes=0-0') {
+          expect(request.headers.value('if-range'), '"new-v2"');
+        }
+        final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+        final start = int.parse(match.group(1)!);
+        final end = int.parse(match.group(2)!);
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(HttpHeaders.etagHeader, '"new-v2"');
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/${payload.length}',
+        );
+        request.response.add(payload.sublist(start, end + 1));
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+          .download(download, onProgress: _ignoreProgress);
+
+      expect(result.totalBytes, payload.length);
+      expect(ranges, contains('bytes=0-32767'));
+      expect(
+        await File('${temporaryDirectory.path}/changed-source.bin')
+            .readAsBytes(),
+        payload,
+      );
+      expect(await oldSegment.exists(), isFalse);
+    },
+  );
+
+  test('does not resume segments when the server provides no validator', () async {
+    final oldPayload = List<int>.filled(128 * 1024, 4);
+    final payload = List<int>.generate(128 * 1024, (index) => index % 179);
+    final download = task('unvalidated-source.bin');
+    final partialPath =
+        '${temporaryDirectory.path}/unvalidated-source.bin.${download.id}.part';
+    const segmentLength = 128 * 1024 ~/ 4;
+    final staleSegment = File('$partialPath.seg1');
+    await staleSegment.writeAsBytes(
+      oldPayload.sublist(segmentLength, segmentLength * 2),
+    );
+    final ranges = <String>[];
+    server.listen((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader)!;
+      ranges.add(range);
+      final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+      final start = int.parse(match.group(1)!);
+      final end = int.parse(match.group(2)!);
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes $start-$end/${payload.length}',
+      );
+      request.response.add(payload.sublist(start, end + 1));
+      await request.response.close();
+    });
+
+    final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+        .download(download, onProgress: _ignoreProgress);
+
+    expect(result.totalBytes, payload.length);
+    expect(ranges, contains('bytes=$segmentLength-${segmentLength * 2 - 1}'));
+    expect(
+      await File('${temporaryDirectory.path}/unvalidated-source.bin')
+          .readAsBytes(),
+      payload,
+    );
+    expect(await staleSegment.exists(), isFalse);
+  });
+
+  test('uses Last-Modified with If-Range when no strong ETag is available', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 177);
+    final download = task('last-modified-source.bin');
+    final partialPath =
+        '${temporaryDirectory.path}/last-modified-source.bin.${download.id}.part';
+    const segmentLength = 128 * 1024 ~/ 4;
+    final savedSegment = File('$partialPath.seg0');
+    await savedSegment.writeAsBytes(payload.sublist(0, segmentLength));
+    const modified = 'Wed, 21 Oct 2015 07:28:00 GMT';
+    await File('$partialPath.meta').writeAsString(
+      '${payload.length}\n${HttpHeaders.lastModifiedHeader}\n$modified',
+    );
+    final ranges = <String>[];
+    server.listen((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader)!;
+      ranges.add(range);
+      if (range != 'bytes=0-0') {
+        expect(request.headers.value('if-range'), modified);
+      }
+      final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+      final start = int.parse(match.group(1)!);
+      final end = int.parse(match.group(2)!);
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(HttpHeaders.lastModifiedHeader, modified);
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes $start-$end/${payload.length}',
+      );
+      request.response.add(payload.sublist(start, end + 1));
+      await request.response.close();
+    });
+
+    final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+        .download(download, onProgress: _ignoreProgress);
+
+    expect(result.totalBytes, payload.length);
+    expect(ranges, isNot(contains('bytes=0-${segmentLength - 1}')));
+    expect(
+      await File('${temporaryDirectory.path}/last-modified-source.bin')
+          .readAsBytes(),
+      payload,
+    );
+  });
+
+  test(
+    'discards all segments when If-Range reports the source changed',
+    () async {
+      final payload = List<int>.generate(128 * 1024, (index) => index % 173);
+      server.listen((request) async {
+        final range = request.headers.value(HttpHeaders.rangeHeader)!;
+        if (range == 'bytes=0-0') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(HttpHeaders.etagHeader, '"source-v1"');
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-0/${payload.length}',
+          );
+          request.response.add([payload.first]);
+        } else {
+          expect(request.headers.value('if-range'), '"source-v1"');
+          request.response.statusCode = HttpStatus.ok;
+          request.response.add(payload);
+        }
+        await request.response.close();
+      });
+      final download = task('source-changed.bin');
+
+      await expectLater(
+        HttpDownloadEngine(minimumSegmentedSize: 1)
+            .download(download, onProgress: _ignoreProgress),
+        throwsA(
+          isA<DownloadException>().having(
+            (error) => error.message,
+            'message',
+            'The remote file changed during the segmented download. Retry to start over.',
+          ),
+        ),
+      );
+
+      expect(
+        await File('${temporaryDirectory.path}/source-changed.bin').exists(),
+        isFalse,
+      );
+      expect(await Directory(temporaryDirectory.path).list().toList(), isEmpty);
+    },
+  );
+
+  test('follows redirects for the probe and every parallel segment', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 167);
+    var redirectedRangeRequests = 0;
+    server.listen((request) async {
+      if (request.uri.path == '/redirected-large.bin') {
+        request.response.statusCode = HttpStatus.found;
+        request.response.headers.set(
+          HttpHeaders.locationHeader,
+          '/actual-large.bin',
+        );
+        await request.response.close();
+        return;
+      }
+      final range = request.headers.value(HttpHeaders.rangeHeader)!;
+      if (range != 'bytes=0-0') redirectedRangeRequests++;
+      final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+      final start = int.parse(match.group(1)!);
+      final end = int.parse(match.group(2)!);
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(HttpHeaders.etagHeader, '"redirect-v1"');
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes $start-$end/${payload.length}',
+      );
+      request.response.add(payload.sublist(start, end + 1));
+      await request.response.close();
+    });
+    final redirectedTask = DownloadTask.fromUrl(
+      'http://${server.address.address}:${server.port}/redirected-large.bin',
+      temporaryDirectory.path,
+    );
+
+    final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+        .download(redirectedTask, onProgress: _ignoreProgress);
+
+    expect(result.totalBytes, payload.length);
+    expect(redirectedRangeRequests, 4);
+    expect(
+      await File('${temporaryDirectory.path}/redirected-large.bin')
+          .readAsBytes(),
+      payload,
+    );
+  });
+
+  test(
+    'starts every segment request before any segment response completes',
+    () async {
+      final payload = List<int>.generate(128 * 1024, (index) => index % 163);
+      final allSegmentsReceived = Completer<void>();
+      var activeSegmentRequests = 0;
+      var maximumActiveSegmentRequests = 0;
+      server.listen((request) async {
+        final range = request.headers.value(HttpHeaders.rangeHeader)!;
+        if (range == 'bytes=0-0') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-0/${payload.length}',
+          );
+          request.response.add([payload.first]);
+          await request.response.close();
+          return;
+        }
+        activeSegmentRequests++;
+        if (activeSegmentRequests > maximumActiveSegmentRequests) {
+          maximumActiveSegmentRequests = activeSegmentRequests;
+        }
+        if (activeSegmentRequests == 4 && !allSegmentsReceived.isCompleted) {
+          allSegmentsReceived.complete();
+        }
+        await allSegmentsReceived.future.timeout(const Duration(seconds: 2));
+        final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+        final start = int.parse(match.group(1)!);
+        final end = int.parse(match.group(2)!);
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(HttpHeaders.etagHeader, '"parallel-v1"');
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/${payload.length}',
+        );
+        request.response.add(payload.sublist(start, end + 1));
+        await request.response.close();
+        activeSegmentRequests--;
+      });
+
+      final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+          .download(task('parallel-proof.bin'), onProgress: _ignoreProgress);
+
+      expect(result.totalBytes, payload.length);
+      expect(maximumActiveSegmentRequests, 4);
     },
   );
 

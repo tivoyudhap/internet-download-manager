@@ -155,6 +155,7 @@ class HttpDownloadEngine implements DownloadEngine {
             destination: destination,
             partialFile: partialFile,
             totalBytes: probeRange.total!,
+            validator: _rangeValidator(response),
             onProgress: onProgress,
             control: control,
           );
@@ -326,6 +327,7 @@ class HttpDownloadEngine implements DownloadEngine {
     required File destination,
     required File partialFile,
     required int totalBytes,
+    required _RangeValidator? validator,
     required DownloadProgressCallback onProgress,
     required DownloadControl? control,
   }) async {
@@ -343,6 +345,26 @@ class HttpDownloadEngine implements DownloadEngine {
       );
     }
 
+    final metadataFile = File('${partialFile.path}.meta');
+    final canReuseSegments = await _matchesStoredValidator(
+      metadataFile,
+      totalBytes: totalBytes,
+      validator: validator,
+    );
+    if (!canReuseSegments) {
+      for (final segment in segments) {
+        if (await segment.file.exists()) await segment.file.delete();
+      }
+      if (await partialFile.exists()) await partialFile.delete();
+      if (await metadataFile.exists()) await metadataFile.delete();
+    }
+    if (validator != null) {
+      await metadataFile.writeAsString(
+        '$totalBytes\n${validator.headerName}\n${validator.value}',
+        flush: true,
+      );
+    }
+
     var receivedBytes = 0;
     for (final segment in segments) {
       if (!await segment.file.exists()) continue;
@@ -354,63 +376,91 @@ class HttpDownloadEngine implements DownloadEngine {
       }
     }
     final stopwatch = Stopwatch()..start();
-    await Future.wait(
-      segments.map((segment) async {
-        var offset = segment.start;
-        if (await segment.file.exists()) offset += await segment.file.length();
-        if (offset > segment.end) return;
+    try {
+      await Future.wait(
+        segments.map((segment) async {
+          var offset = segment.start;
+          if (await segment.file.exists()) {
+            offset += await segment.file.length();
+          }
+          if (offset > segment.end) return;
 
-        final request = await _withCancellation(client.getUrl(uri), control);
-        request.headers.set(
-          HttpHeaders.rangeHeader,
-          'bytes=$offset-${segment.end}',
-        );
-        control?.registerCancelHandler(() => request.abort());
-        final response = await _withCancellation(request.close(), control);
-        final range = _parseContentRange(
-          response.headers.value(HttpHeaders.contentRangeHeader),
-        );
-        if (response.statusCode != HttpStatus.partialContent ||
-            range == null ||
-            range.start != offset ||
-            range.end != segment.end ||
-            range.total != totalBytes) {
-          await response.drain<void>();
-          throw const DownloadException(
-            'Server returned an invalid byte range for a segment.',
+          final request = await _withCancellation(client.getUrl(uri), control);
+          request.headers.set(
+            HttpHeaders.rangeHeader,
+            'bytes=$offset-${segment.end}',
           );
-        }
-
-        final sink = segment.file.openWrite(
-          mode: offset == segment.start ? FileMode.writeOnly : FileMode.append,
-        );
-        var segmentBytes = offset - segment.start;
-        final iterator = StreamIterator<List<int>>(response);
-        control?.registerCancelHandler(() => unawaited(iterator.cancel()));
-        try {
-          while (await _withCancellation(iterator.moveNext(), control)) {
-            await control?.waitUntilResumed();
-            final chunk = iterator.current;
-            sink.add(chunk);
-            segmentBytes += chunk.length;
-            receivedBytes += chunk.length;
-            final elapsed = stopwatch.elapsed;
-            onProgress(
-              receivedBytes: receivedBytes,
-              totalBytes: totalBytes,
-              bytesPerSecond: elapsed.inMicroseconds == 0
-                  ? 0
-                  : receivedBytes * 1000000 / elapsed.inMicroseconds,
+          if (validator != null) {
+            request.headers.set('if-range', validator.value);
+          }
+          control?.registerCancelHandler(() => request.abort());
+          final response = await _withCancellation(request.close(), control);
+          final range = _parseContentRange(
+            response.headers.value(HttpHeaders.contentRangeHeader),
+          );
+          final responseValidator = validator == null
+              ? null
+              : response.headers.value(validator.headerName);
+          if (response.statusCode == HttpStatus.ok ||
+              (validator != null &&
+                  responseValidator != null &&
+                  responseValidator != validator.value)) {
+            await response.drain<void>();
+            throw const _RemoteSourceChangedException();
+          }
+          if (response.statusCode != HttpStatus.partialContent ||
+              range == null ||
+              range.start != offset ||
+              range.end != segment.end ||
+              range.total != totalBytes) {
+            await response.drain<void>();
+            throw const DownloadException(
+              'Server returned an invalid byte range for a segment.',
             );
           }
-        } finally {
-          await sink.close();
-        }
-        if (segmentBytes != segment.length) {
-          throw const DownloadException('A download segment ended early.');
-        }
-      }),
-    );
+
+          final sink = segment.file.openWrite(
+            mode: offset == segment.start
+                ? FileMode.writeOnly
+                : FileMode.append,
+          );
+          var segmentBytes = offset - segment.start;
+          final iterator = StreamIterator<List<int>>(response);
+          control?.registerCancelHandler(() => unawaited(iterator.cancel()));
+          try {
+            while (await _withCancellation(iterator.moveNext(), control)) {
+              await control?.waitUntilResumed();
+              final chunk = iterator.current;
+              sink.add(chunk);
+              segmentBytes += chunk.length;
+              receivedBytes += chunk.length;
+              final elapsed = stopwatch.elapsed;
+              onProgress(
+                receivedBytes: receivedBytes,
+                totalBytes: totalBytes,
+                bytesPerSecond: elapsed.inMicroseconds == 0
+                    ? 0
+                    : receivedBytes * 1000000 / elapsed.inMicroseconds,
+              );
+            }
+          } finally {
+            await sink.close();
+          }
+          if (segmentBytes != segment.length) {
+            throw const DownloadException('A download segment ended early.');
+          }
+        }),
+      );
+    } on _RemoteSourceChangedException {
+      for (final segment in segments) {
+        if (await segment.file.exists()) await segment.file.delete();
+      }
+      if (await partialFile.exists()) await partialFile.delete();
+      if (await metadataFile.exists()) await metadataFile.delete();
+      throw const DownloadException(
+        'The remote file changed during the segmented download. Retry to start over.',
+      );
+    }
 
     await control?.waitUntilResumed();
     final output = partialFile.openWrite(mode: FileMode.writeOnly);
@@ -429,6 +479,7 @@ class HttpDownloadEngine implements DownloadEngine {
     for (final segment in segments) {
       if (await segment.file.exists()) await segment.file.delete();
     }
+    if (await metadataFile.exists()) await metadataFile.delete();
     final elapsed = stopwatch.elapsed;
     onProgress(
       receivedBytes: totalBytes,
@@ -441,6 +492,38 @@ class HttpDownloadEngine implements DownloadEngine {
       fileName: destination.path.split(Platform.pathSeparator).last,
       totalBytes: totalBytes,
     );
+  }
+
+  Future<bool> _matchesStoredValidator(
+    File metadataFile, {
+    required int totalBytes,
+    required _RangeValidator? validator,
+  }) async {
+    if (validator == null || !await metadataFile.exists()) return false;
+    try {
+      final lines = await metadataFile.readAsLines();
+      return lines.length == 3 &&
+          lines[0] == '$totalBytes' &&
+          lines[1] == validator.headerName &&
+          lines[2] == validator.value;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  _RangeValidator? _rangeValidator(HttpClientResponse response) {
+    final etag = response.headers.value(HttpHeaders.etagHeader);
+    if (etag != null && !etag.toLowerCase().startsWith('w/')) {
+      return _RangeValidator(headerName: HttpHeaders.etagHeader, value: etag);
+    }
+    final modified = response.headers.value(HttpHeaders.lastModifiedHeader);
+    if (modified != null) {
+      return _RangeValidator(
+        headerName: HttpHeaders.lastModifiedHeader,
+        value: modified,
+      );
+    }
+    return null;
   }
 
   _ContentRange? _parseContentRange(String? value) {
@@ -492,6 +575,17 @@ class _DownloadSegment {
   final int end;
   final File file;
   int get length => end - start + 1;
+}
+
+class _RangeValidator {
+  const _RangeValidator({required this.headerName, required this.value});
+
+  final String headerName;
+  final String value;
+}
+
+class _RemoteSourceChangedException implements Exception {
+  const _RemoteSourceChangedException();
 }
 
 class DownloadException implements Exception {
