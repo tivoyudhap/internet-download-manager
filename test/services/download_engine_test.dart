@@ -115,9 +115,554 @@ void main() {
         payload,
       );
       expect(progress.last, payload.length);
+      expect(progress, orderedEquals([...progress]..sort()));
       expect(await Directory(temporaryDirectory.path).list().length, 1);
     },
   );
+
+  test(
+    'resumes only missing segments left by an interrupted transfer',
+    () async {
+      final payload = List<int>.generate(128 * 1024, (index) => index % 239);
+      final download = task('resumed-segments.bin');
+      final partialPath =
+          '${temporaryDirectory.path}/resumed-segments.bin.${download.id}.part';
+      final savedSegment = File('$partialPath.seg1');
+      const segmentLength = 128 * 1024 ~/ 4;
+      await savedSegment.writeAsBytes(
+        payload.sublist(segmentLength, segmentLength * 2),
+      );
+      final requestedRanges = <String>[];
+      server.listen((request) async {
+        final requestedRange = request.headers.value(HttpHeaders.rangeHeader)!;
+        requestedRanges.add(requestedRange);
+        if (requestedRange == 'bytes=0-0') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-0/${payload.length}',
+          );
+          request.response.add([payload.first]);
+        } else {
+          final match = RegExp(r'^bytes=(\d+)-(\d+)$')
+              .firstMatch(requestedRange)!;
+          final start = int.parse(match.group(1)!);
+          final end = int.parse(match.group(2)!);
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes $start-$end/${payload.length}',
+          );
+          request.response.add(payload.sublist(start, end + 1));
+        }
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+          .download(download, onProgress: _ignoreProgress);
+
+      expect(result.totalBytes, payload.length);
+      expect(requestedRanges, hasLength(4));
+      expect(
+        requestedRanges,
+        isNot(contains('bytes=$segmentLength-${segmentLength * 2 - 1}')),
+      );
+      expect(
+        await File('${temporaryDirectory.path}/resumed-segments.bin')
+            .readAsBytes(),
+        payload,
+      );
+      expect(await savedSegment.exists(), isFalse);
+    },
+  );
+
+  test('rejects a segment response with a mismatched Content-Range', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 233);
+    server.listen((request) async {
+      final requestedRange = request.headers.value(HttpHeaders.rangeHeader)!;
+      if (requestedRange == 'bytes=0-0') {
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 0-0/${payload.length}',
+        );
+        request.response.add([payload.first]);
+      } else {
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 0-0/${payload.length}',
+        );
+        request.response.add([payload.first]);
+      }
+      await request.response.close();
+    });
+
+    await expectLater(
+      HttpDownloadEngine(minimumSegmentedSize: 1)
+          .download(task('invalid-segment.bin'), onProgress: _ignoreProgress),
+      throwsA(
+        isA<DownloadException>().having(
+          (error) => error.message,
+          'message',
+          'Server returned an invalid byte range for a segment.',
+        ),
+      ),
+    );
+    expect(
+      await File('${temporaryDirectory.path}/invalid-segment.bin').exists(),
+      isFalse,
+    );
+  });
+
+  test(
+    'splits uneven file sizes into complete non-overlapping ranges',
+    () async {
+      final payload = List<int>.generate(
+        128 * 1024 + 3,
+        (index) => index % 227,
+      );
+      final ranges = <String>[];
+      server.listen((request) async {
+        final range = request.headers.value(HttpHeaders.rangeHeader)!;
+        ranges.add(range);
+        final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+        final start = int.parse(match.group(1)!);
+        final end = int.parse(match.group(2)!);
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/${payload.length}',
+        );
+        request.response.add(payload.sublist(start, end + 1));
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine(
+        segmentCount: 4,
+        minimumSegmentedSize: 1,
+      ).download(task('uneven.bin'), onProgress: _ignoreProgress);
+
+      expect(result.totalBytes, payload.length);
+      expect(ranges, contains('bytes=0-0'));
+      expect(ranges, contains('bytes=0-${payload.length ~/ 4 - 1}'));
+      expect(
+        ranges,
+        contains('bytes=${payload.length ~/ 4}-${payload.length ~/ 2 - 1}'),
+      );
+      expect(
+        await File('${temporaryDirectory.path}/uneven.bin').readAsBytes(),
+        payload,
+      );
+    },
+  );
+
+  test('continues partial segments and discards oversized segment files', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 223);
+    final download = task('recovered-segments.bin');
+    final partialPath =
+        '${temporaryDirectory.path}/recovered-segments.bin.${download.id}.part';
+    const segmentLength = 128 * 1024 ~/ 4;
+    final partialSegment = File('$partialPath.seg0');
+    final oversizedSegment = File('$partialPath.seg1');
+    final completeSegment2 = File('$partialPath.seg2');
+    final completeSegment3 = File('$partialPath.seg3');
+    await partialSegment.writeAsBytes(payload.sublist(0, 100));
+    await oversizedSegment.writeAsBytes(List.filled(segmentLength + 1, 0));
+    await completeSegment2.writeAsBytes(
+      payload.sublist(segmentLength * 2, segmentLength * 3),
+    );
+    await completeSegment3.writeAsBytes(payload.sublist(segmentLength * 3));
+    final ranges = <String>[];
+    server.listen((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader)!;
+      ranges.add(range);
+      if (range == 'bytes=0-0') {
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 0-0/${payload.length}',
+        );
+        request.response.add([payload.first]);
+      } else {
+        final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+        final start = int.parse(match.group(1)!);
+        final end = int.parse(match.group(2)!);
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/${payload.length}',
+        );
+        request.response.add(payload.sublist(start, end + 1));
+      }
+      await request.response.close();
+    });
+
+    final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+        .download(download, onProgress: _ignoreProgress);
+
+    expect(result.totalBytes, payload.length);
+    expect(ranges, contains('bytes=100-${segmentLength - 1}'));
+    expect(ranges, contains('bytes=$segmentLength-${segmentLength * 2 - 1}'));
+    expect(
+      ranges,
+      isNot(contains('bytes=${segmentLength * 2}-${segmentLength * 3 - 1}')),
+    );
+    expect(
+      await File('${temporaryDirectory.path}/recovered-segments.bin')
+          .readAsBytes(),
+      payload,
+    );
+  });
+
+  test('rejects a failed HTTP response for a segment', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 211);
+    server.listen((request) async {
+      if (request.headers.value(HttpHeaders.rangeHeader) == 'bytes=0-0') {
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 0-0/${payload.length}',
+        );
+        request.response.add([payload.first]);
+      } else {
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+      }
+      await request.response.close();
+    });
+
+    await expectLater(
+      HttpDownloadEngine(
+        minimumSegmentedSize: 1,
+      ).download(task('segment-server-error.bin'), onProgress: _ignoreProgress),
+      throwsA(
+        isA<DownloadException>().having(
+          (error) => error.message,
+          'message',
+          'Server returned an invalid byte range for a segment.',
+        ),
+      ),
+    );
+    expect(
+      await File('${temporaryDirectory.path}/segment-server-error.bin')
+          .exists(),
+      isFalse,
+    );
+  });
+
+  test('retries a truncated segment from its saved byte offset', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 197);
+    const segmentLength = 128 * 1024 ~/ 4;
+    final requestedRanges = <String>[];
+    var shouldTruncateFirstSegment = true;
+    server.listen((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader)!;
+      requestedRanges.add(range);
+      final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+      final start = int.parse(match.group(1)!);
+      final end = int.parse(match.group(2)!);
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes $start-$end/${payload.length}',
+      );
+      if (range == 'bytes=0-0') {
+        request.response.add([payload.first]);
+      } else if (start == 0 && shouldTruncateFirstSegment) {
+        shouldTruncateFirstSegment = false;
+        request.response.contentLength = end - start + 1;
+        final socket = await request.response.detachSocket(writeHeaders: true);
+        socket.add(payload.sublist(start, start + 100));
+        await socket.flush();
+        await socket.close();
+        return;
+      } else {
+        request.response.add(payload.sublist(start, end + 1));
+      }
+      await request.response.close();
+    });
+    final download = task('retry-segment.bin');
+    final engine = HttpDownloadEngine(minimumSegmentedSize: 1);
+
+    await expectLater(
+      engine.download(download, onProgress: _ignoreProgress),
+      throwsA(isA<DownloadException>()),
+    );
+    final partialSegment = File(
+      '${temporaryDirectory.path}/retry-segment.bin.${download.id}.part.seg0',
+    );
+    expect(await partialSegment.length(), 100);
+
+    final result = await engine.download(download, onProgress: _ignoreProgress);
+
+    expect(result.totalBytes, payload.length);
+    expect(requestedRanges, contains('bytes=100-${segmentLength - 1}'));
+    expect(
+      await File('${temporaryDirectory.path}/retry-segment.bin').readAsBytes(),
+      payload,
+    );
+  });
+
+  test('pauses segmented assembly until resumed and then completes', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 199);
+    server.listen((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader)!;
+      final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+      final start = int.parse(match.group(1)!);
+      final end = int.parse(match.group(2)!);
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes $start-$end/${payload.length}',
+      );
+      request.response.add(payload.sublist(start, end + 1));
+      await request.response.close();
+    });
+    final paused = Completer<void>();
+    final control = DownloadControl();
+    final downloadFuture = HttpDownloadEngine(minimumSegmentedSize: 1).download(
+      task('paused-segments.bin'),
+      control: control,
+      onProgress:
+          ({
+            required receivedBytes,
+            required totalBytes,
+            required bytesPerSecond,
+          }) {
+            if (!control.isPaused && receivedBytes > 0) {
+              control.pause();
+              if (!paused.isCompleted) paused.complete();
+            }
+          },
+    );
+
+    await paused.future;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(
+      await File('${temporaryDirectory.path}/paused-segments.bin').exists(),
+      isFalse,
+    );
+    control.resume();
+    final result = await downloadFuture;
+
+    expect(result.totalBytes, payload.length);
+    expect(
+      await File('${temporaryDirectory.path}/paused-segments.bin')
+          .readAsBytes(),
+      payload,
+    );
+  });
+
+  test(
+    'cancels active segmented requests without publishing a final file',
+    () async {
+      final payload = List<int>.generate(128 * 1024, (index) => index % 193);
+      final segmentRequestReceived = Completer<void>();
+      server.listen((request) async {
+        final range = request.headers.value(HttpHeaders.rangeHeader)!;
+        if (range == 'bytes=0-0') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-0/${payload.length}',
+          );
+          request.response.add([payload.first]);
+          await request.response.close();
+          return;
+        }
+        if (!segmentRequestReceived.isCompleted) {
+          segmentRequestReceived.complete();
+        }
+        request.response.contentLength = payload.length;
+        request.response.add([payload.first]);
+        await request.response.flush();
+        await Completer<void>().future;
+      });
+      final control = DownloadControl();
+      final downloadFuture = HttpDownloadEngine(minimumSegmentedSize: 1)
+          .download(
+            task('canceled-segments.bin'),
+            onProgress: _ignoreProgress,
+            control: control,
+          );
+
+      await segmentRequestReceived.future;
+      control.cancel();
+
+      await expectLater(
+        downloadFuture,
+        throwsA(isA<DownloadCanceledException>()),
+      );
+      expect(
+        await File('${temporaryDirectory.path}/canceled-segments.bin').exists(),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'falls back to a full response when the ranged file is too small',
+    () async {
+      const payload = 'small ranged response';
+      var fullResponseRequests = 0;
+      server.listen((request) async {
+        if (request.headers.value(HttpHeaders.rangeHeader) == 'bytes=0-0') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'bytes 0-0/${payload.length}',
+          );
+          request.response.add([payload.codeUnitAt(0)]);
+        } else {
+          fullResponseRequests++;
+          request.response.write(payload);
+        }
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        task('small-ranged.txt'),
+        onProgress: _ignoreProgress,
+      );
+
+      expect(result.totalBytes, payload.length);
+      expect(fullResponseRequests, 1);
+      expect(
+        await File('${temporaryDirectory.path}/small-ranged.txt')
+            .readAsString(),
+        payload,
+      );
+    },
+  );
+
+  test(
+    'falls back when the range probe has a malformed Content-Range',
+    () async {
+      const payload = 'fallback after a malformed range probe';
+      var fullRequests = 0;
+      server.listen((request) async {
+        if (request.headers.value(HttpHeaders.rangeHeader) == 'bytes=0-0') {
+          request.response.statusCode = HttpStatus.partialContent;
+          request.response.headers.set(
+            HttpHeaders.contentRangeHeader,
+            'invalid',
+          );
+          request.response.add([payload.codeUnitAt(0)]);
+        } else {
+          fullRequests++;
+          request.response.write(payload);
+        }
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        task('malformed-probe.txt'),
+        onProgress: _ignoreProgress,
+      );
+
+      expect(result.totalBytes, payload.length);
+      expect(fullRequests, 1);
+      expect(
+        await File('${temporaryDirectory.path}/malformed-probe.txt')
+            .readAsString(),
+        payload,
+      );
+    },
+  );
+
+  test(
+    'uses two valid segments when file size is below configured segment count',
+    () async {
+      const payload = <int>[17, 42];
+      final ranges = <String>[];
+      server.listen((request) async {
+        final range = request.headers.value(HttpHeaders.rangeHeader)!;
+        ranges.add(range);
+        final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+        final start = int.parse(match.group(1)!);
+        final end = int.parse(match.group(2)!);
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes $start-$end/${payload.length}',
+        );
+        request.response.add(payload.sublist(start, end + 1));
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine(
+        segmentCount: 4,
+        minimumSegmentedSize: 2,
+      ).download(task('two-byte.bin'), onProgress: _ignoreProgress);
+
+      expect(result.totalBytes, 2);
+      expect(ranges, containsAll(['bytes=0-0', 'bytes=1-1']));
+      expect(
+        await File('${temporaryDirectory.path}/two-byte.bin').readAsBytes(),
+        payload,
+      );
+    },
+  );
+
+  test('falls back safely for a one-byte ranged file', () async {
+    const payload = <int>[81];
+    var fullRequests = 0;
+    server.listen((request) async {
+      if (request.headers.value(HttpHeaders.rangeHeader) == 'bytes=0-0') {
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 0-0/1',
+        );
+        request.response.add(payload);
+      } else {
+        fullRequests++;
+        request.response.add(payload);
+      }
+      await request.response.close();
+    });
+
+    final result = await HttpDownloadEngine(minimumSegmentedSize: 1)
+        .download(task('one-byte.bin'), onProgress: _ignoreProgress);
+
+    expect(result.totalBytes, 1);
+    expect(fullRequests, 1);
+    expect(
+      await File('${temporaryDirectory.path}/one-byte.bin').readAsBytes(),
+      payload,
+    );
+  });
+
+  test('rejects a segment body longer than its requested byte range', () async {
+    final payload = List<int>.generate(128 * 1024, (index) => index % 191);
+    server.listen((request) async {
+      final range = request.headers.value(HttpHeaders.rangeHeader)!;
+      final match = RegExp(r'^bytes=(\d+)-(\d+)$').firstMatch(range)!;
+      final start = int.parse(match.group(1)!);
+      final end = int.parse(match.group(2)!);
+      request.response.statusCode = HttpStatus.partialContent;
+      request.response.headers.set(
+        HttpHeaders.contentRangeHeader,
+        'bytes $start-$end/${payload.length}',
+      );
+      if (range == 'bytes=0-0') {
+        request.response.add([payload.first]);
+      } else {
+        request.response.add([...payload.sublist(start, end + 1), 255]);
+      }
+      await request.response.close();
+    });
+
+    await expectLater(
+      HttpDownloadEngine(minimumSegmentedSize: 1)
+          .download(task('long-segment.bin'), onProgress: _ignoreProgress),
+      throwsA(isA<DownloadException>()),
+    );
+    expect(
+      await File('${temporaryDirectory.path}/long-segment.bin').exists(),
+      isFalse,
+    );
+  });
 
   test(
     'uses a numbered filename when the destination already exists',
