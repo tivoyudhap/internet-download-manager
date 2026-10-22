@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'models/download_task.dart';
+import 'services/download_queue_controller.dart';
+import 'services/download_queue_store.dart';
+
 const _ink = Color(0xFF172B4D);
 const _muted = Color(0xFF718096);
 const _blue = Color(0xFF1769AA);
@@ -27,11 +31,11 @@ class DownloadManagerApp extends StatelessWidget {
 }
 
 class _Category {
-  const _Category(this.label, this.icon, this.count);
+  const _Category(this.label, this.icon, this.status);
 
   final String label;
   final IconData icon;
-  final String count;
+  final DownloadStatus? status;
 }
 
 class DownloadsPage extends StatefulWidget {
@@ -42,15 +46,39 @@ class DownloadsPage extends StatefulWidget {
 }
 
 class _DownloadsPageState extends State<DownloadsPage> {
+  final _queue = DownloadQueueController(DownloadQueueStore());
+  final _searchController = TextEditingController();
+
   static const _categories = <_Category>[
-    _Category('All downloads', Icons.inbox_rounded, '0'),
-    _Category('In progress', Icons.downloading_rounded, '0'),
-    _Category('Completed', Icons.check_circle_outline_rounded, '0'),
-    _Category('Queue', Icons.schedule_rounded, '0'),
+    _Category('All downloads', Icons.inbox_rounded, null),
+    _Category(
+      'In progress',
+      Icons.downloading_rounded,
+      DownloadStatus.downloading,
+    ),
+    _Category(
+      'Completed',
+      Icons.check_circle_outline_rounded,
+      DownloadStatus.completed,
+    ),
+    _Category('Queue', Icons.schedule_rounded, DownloadStatus.queued),
   ];
 
   int _selectedCategory = 0;
   bool _searchOpen = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _queue.load();
+  }
+
+  @override
+  void dispose() {
+    _queue.dispose();
+    _searchController.dispose();
+    super.dispose();
+  }
 
   Future<void> _showAddDownloadDialog() async {
     final controller = TextEditingController();
@@ -59,75 +87,132 @@ class _DownloadsPageState extends State<DownloadsPage> {
       builder: (context) => _AddDownloadDialog(controller: controller),
     );
     controller.dispose();
-    if (!mounted || url == null || url.trim().isEmpty) return;
+    if (!mounted || url == null) return;
+    try {
+      await _queue.addUrl(url);
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not save download: $error')),
+      );
+      return;
+    }
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text(
-          'Tampilan antrean siap. Mesin unduh akan ditambahkan berikutnya.',
+          'Added to queue. The download engine is not connected yet.',
         ),
         behavior: SnackBarBehavior.floating,
       ),
     );
   }
 
+  List<DownloadTask> _visibleTasks() {
+    final category = _categories[_selectedCategory];
+    final query = _searchController.text.trim().toLowerCase();
+    return _queue.tasks.where((task) {
+      final matchesStatus =
+          category.status == null || task.status == category.status;
+      final matchesQuery =
+          query.isEmpty ||
+          task.fileName.toLowerCase().contains(query) ||
+          task.url.toLowerCase().contains(query);
+      return matchesStatus && matchesQuery;
+    }).toList();
+  }
+
+  int _count(DownloadStatus? status) => _queue.tasks
+      .where((task) => status == null || task.status == status)
+      .length;
+
   @override
   Widget build(BuildContext context) {
-    final category = _categories[_selectedCategory];
-    return Scaffold(
-      body: SafeArea(
-        child: Row(
-          children: [
-            _Sidebar(
-              categories: _categories,
-              selectedIndex: _selectedCategory,
-              onSelected: (index) => setState(() => _selectedCategory = index),
-            ),
-            Expanded(
-              child: Column(
-                children: [
-                  _TopBar(
-                    searchOpen: _searchOpen,
-                    onSearch: () => setState(() => _searchOpen = !_searchOpen),
-                  ),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, constraints) => SingleChildScrollView(
-                        padding: EdgeInsets.fromLTRB(
-                          constraints.maxWidth < 900 ? 24 : 40,
-                          32,
-                          constraints.maxWidth < 900 ? 24 : 40,
-                          32,
-                        ),
-                        child: Center(
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 1320),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                _PageHeading(
-                                  selectedCategory: category.label,
-                                  onAdd: _showAddDownloadDialog,
+    return AnimatedBuilder(
+      animation: _queue,
+      builder: (context, _) {
+        final category = _categories[_selectedCategory];
+        return Scaffold(
+          body: SafeArea(
+            child: Row(
+              children: [
+                _Sidebar(
+                  categories: _categories,
+                  counts: _categories
+                      .map((item) => _count(item.status))
+                      .toList(),
+                  selectedIndex: _selectedCategory,
+                  onSelected: (index) =>
+                      setState(() => _selectedCategory = index),
+                ),
+                Expanded(
+                  child: Column(
+                    children: [
+                      _TopBar(
+                        searchOpen: _searchOpen,
+                        searchController: _searchController,
+                        onSearch: () =>
+                            setState(() => _searchOpen = !_searchOpen),
+                        onSearchChanged: (_) => setState(() {}),
+                      ),
+                      Expanded(
+                        child: LayoutBuilder(
+                          builder: (context, constraints) =>
+                              SingleChildScrollView(
+                                padding: EdgeInsets.fromLTRB(
+                                  constraints.maxWidth < 900 ? 24 : 40,
+                                  32,
+                                  constraints.maxWidth < 900 ? 24 : 40,
+                                  32,
                                 ),
-                                const SizedBox(height: 28),
-                                const _OverviewCards(),
-                                const SizedBox(height: 28),
-                                _DownloadListCard(
-                                  title: category.label,
-                                  onAdd: _showAddDownloadDialog,
+                                child: Center(
+                                  child: ConstrainedBox(
+                                    constraints: const BoxConstraints(
+                                      maxWidth: 1320,
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        _PageHeading(
+                                          selectedCategory: category.label,
+                                          onAdd: _showAddDownloadDialog,
+                                        ),
+                                        const SizedBox(height: 28),
+                                        _OverviewCards(
+                                          activeCount: _count(
+                                            DownloadStatus.downloading,
+                                          ),
+                                          completedCount: _count(
+                                            DownloadStatus.completed,
+                                          ),
+                                          queuedCount: _count(
+                                            DownloadStatus.queued,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 28),
+                                        _DownloadListCard(
+                                          title: category.label,
+                                          tasks: _visibleTasks(),
+                                          isLoading: _queue.isLoading,
+                                          loadError: _queue.loadError,
+                                          onAdd: _showAddDownloadDialog,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
-                              ],
-                            ),
-                          ),
+                              ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -135,11 +220,13 @@ class _DownloadsPageState extends State<DownloadsPage> {
 class _Sidebar extends StatelessWidget {
   const _Sidebar({
     required this.categories,
+    required this.counts,
     required this.selectedIndex,
     required this.onSelected,
   });
 
   final List<_Category> categories;
+  final List<int> counts;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
 
@@ -220,6 +307,7 @@ class _Sidebar extends StatelessWidget {
           for (var i = 0; i < categories.length; i++)
             _CategoryTile(
               category: categories[i],
+              count: counts[i],
               selected: i == selectedIndex,
               onTap: () => onSelected(i),
             ),
@@ -256,11 +344,13 @@ class _Sidebar extends StatelessWidget {
 class _CategoryTile extends StatelessWidget {
   const _CategoryTile({
     required this.category,
+    required this.count,
     required this.selected,
     required this.onTap,
   });
 
   final _Category category;
+  final int count;
   final bool selected;
   final VoidCallback onTap;
 
@@ -292,7 +382,7 @@ class _CategoryTile extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  category.count,
+                  '$count',
                   style: TextStyle(
                     color: selected ? _blue : const Color(0xFF9AA6B6),
                     fontSize: 11,
@@ -309,10 +399,17 @@ class _CategoryTile extends StatelessWidget {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({required this.searchOpen, required this.onSearch});
+  const _TopBar({
+    required this.searchOpen,
+    required this.searchController,
+    required this.onSearch,
+    required this.onSearchChanged,
+  });
 
   final bool searchOpen;
+  final TextEditingController searchController;
   final VoidCallback onSearch;
+  final ValueChanged<String> onSearchChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -342,6 +439,8 @@ class _TopBar extends StatelessWidget {
               height: 36,
               child: TextField(
                 autofocus: true,
+                controller: searchController,
+                onChanged: onSearchChanged,
                 decoration: InputDecoration(
                   hintText: 'Search downloads',
                   hintStyle: const TextStyle(fontSize: 12),
@@ -439,37 +538,49 @@ class _PageHeading extends StatelessWidget {
 }
 
 class _OverviewCards extends StatelessWidget {
-  const _OverviewCards();
+  const _OverviewCards({
+    required this.activeCount,
+    required this.completedCount,
+    required this.queuedCount,
+  });
+
+  final int activeCount;
+  final int completedCount;
+  final int queuedCount;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 720;
-        final cards = const [
+        final cards = [
           _OverviewCard(
             label: 'Active downloads',
-            value: '0',
+            value: '$activeCount',
             icon: Icons.downloading_rounded,
             tint: Color(0xFFEAF4FC),
             iconColor: _blue,
-            detail: 'Nothing downloading',
+            detail: activeCount == 0
+                ? 'Nothing downloading'
+                : 'Currently downloading',
           ),
           _OverviewCard(
             label: 'Completed today',
-            value: '0',
+            value: '$completedCount',
             icon: Icons.task_alt_rounded,
             tint: Color(0xFFEAF7F1),
             iconColor: Color(0xFF29956B),
-            detail: 'Ready when you are',
+            detail: completedCount == 0
+                ? 'Ready when you are'
+                : 'Files completed',
           ),
           _OverviewCard(
             label: 'Queue remaining',
-            value: '0',
+            value: '$queuedCount',
             icon: Icons.pending_actions_rounded,
             tint: Color(0xFFFFF5E7),
             iconColor: Color(0xFFD89122),
-            detail: 'Queue is clear',
+            detail: queuedCount == 0 ? 'Queue is clear' : 'Waiting to download',
           ),
         ];
         if (compact) {
@@ -569,9 +680,18 @@ class _OverviewCard extends StatelessWidget {
 }
 
 class _DownloadListCard extends StatelessWidget {
-  const _DownloadListCard({required this.title, required this.onAdd});
+  const _DownloadListCard({
+    required this.title,
+    required this.tasks,
+    required this.isLoading,
+    required this.loadError,
+    required this.onAdd,
+  });
 
   final String title;
+  final List<DownloadTask> tasks;
+  final bool isLoading;
+  final String? loadError;
   final VoidCallback onAdd;
 
   @override
@@ -598,9 +718,9 @@ class _DownloadListCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                const Text(
-                  '0 items',
-                  style: TextStyle(color: _muted, fontSize: 12),
+                Text(
+                  '${tasks.length} items',
+                  style: const TextStyle(color: _muted, fontSize: 12),
                 ),
                 const SizedBox(width: 13),
                 IconButton(
@@ -614,65 +734,205 @@ class _DownloadListCard extends StatelessWidget {
           const Divider(height: 1, color: Color(0xFFE8EDF4)),
           const _TableHeader(),
           const Divider(height: 1, color: Color(0xFFE8EDF4)),
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 52, horizontal: 24),
-            child: Column(
-              children: [
-                Container(
-                  width: 66,
-                  height: 66,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF0F6FB),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: const Icon(
-                    Icons.file_download_outlined,
-                    size: 31,
-                    color: Color(0xFF6E9FC6),
-                  ),
-                ),
-                const SizedBox(height: 17),
-                const Text(
-                  'Your download list is empty',
-                  style: TextStyle(
-                    color: _ink,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 7),
-                const Text(
-                  'Add a file URL and it will show up here.',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: _muted, fontSize: 12),
-                ),
-                const SizedBox(height: 19),
-                OutlinedButton.icon(
-                  onPressed: onAdd,
-                  icon: const Icon(Icons.link_rounded, size: 16),
-                  label: const Text('Add your first download'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: _blue,
-                    side: const BorderSide(color: Color(0xFFB9D5EA)),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(8),
+          if (tasks.isNotEmpty)
+            for (final task in tasks) _DownloadRow(task: task)
+          else
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 52, horizontal: 24),
+              child: Column(
+                children: [
+                  Container(
+                    width: 66,
+                    height: 66,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF0F6FB),
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 12,
+                    child: const Icon(
+                      Icons.file_download_outlined,
+                      size: 31,
+                      color: Color(0xFF6E9FC6),
                     ),
-                    textStyle: const TextStyle(
-                      fontSize: 12,
+                  ),
+                  const SizedBox(height: 17),
+                  Text(
+                    isLoading
+                        ? 'Loading your downloads…'
+                        : loadError == null
+                        ? 'Your download list is empty'
+                        : 'Could not load saved downloads',
+                    style: const TextStyle(
+                      color: _ink,
+                      fontSize: 15,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 7),
+                  Text(
+                    loadError ?? 'Add a file URL and it will show up here.',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: _muted, fontSize: 12),
+                  ),
+                  if (!isLoading && loadError == null) ...[
+                    const SizedBox(height: 19),
+                    OutlinedButton.icon(
+                      onPressed: onAdd,
+                      icon: const Icon(Icons.link_rounded, size: 16),
+                      label: const Text('Add your first download'),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: _blue,
+                        side: const BorderSide(color: Color(0xFFB9D5EA)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
+                        textStyle: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
-          ),
         ],
       ),
     );
+  }
+}
+
+class _DownloadRow extends StatelessWidget {
+  const _DownloadRow({required this.task});
+
+  final DownloadTask task;
+
+  @override
+  Widget build(BuildContext context) {
+    final date = task.createdAt.toLocal();
+    final dateLabel =
+        '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 15),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 5,
+                child: Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEAF4FC),
+                        borderRadius: BorderRadius.circular(9),
+                      ),
+                      child: const Icon(
+                        Icons.insert_drive_file_outlined,
+                        color: _blue,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 11),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            task.fileName,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: _ink,
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            '${task.destinationDirectory} · $dateLabel',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(color: _muted, fontSize: 10),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                flex: 2,
+                child: Text(
+                  task.totalBytes == null
+                      ? '—'
+                      : _formatBytes(task.totalBytes!),
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    color: Color(0xFF66758A),
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+              Expanded(
+                flex: 3,
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 9,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF5E7),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      _statusLabel(task.status),
+                      style: const TextStyle(
+                        color: Color(0xFFB97813),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 38),
+            ],
+          ),
+        ),
+        const Divider(
+          height: 1,
+          indent: 22,
+          endIndent: 22,
+          color: Color(0xFFF0F2F6),
+        ),
+      ],
+    );
+  }
+
+  String _statusLabel(DownloadStatus status) => switch (status) {
+    DownloadStatus.queued => 'Queued',
+    DownloadStatus.downloading => 'Downloading',
+    DownloadStatus.paused => 'Paused',
+    DownloadStatus.completed => 'Completed',
+    DownloadStatus.failed => 'Failed',
+    DownloadStatus.canceled => 'Canceled',
+  };
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 }
 
@@ -712,10 +972,30 @@ const _tableLabel = TextStyle(
   letterSpacing: .8,
 );
 
-class _AddDownloadDialog extends StatelessWidget {
+class _AddDownloadDialog extends StatefulWidget {
   const _AddDownloadDialog({required this.controller});
 
   final TextEditingController controller;
+
+  @override
+  State<_AddDownloadDialog> createState() => _AddDownloadDialogState();
+}
+
+class _AddDownloadDialogState extends State<_AddDownloadDialog> {
+  String? _errorText;
+
+  void _submit() {
+    final text = widget.controller.text.trim();
+    final uri = Uri.tryParse(text);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'http' && uri.scheme != 'https')) {
+      setState(() => _errorText = 'Enter a valid HTTP or HTTPS URL.');
+      return;
+    }
+    Navigator.of(context).pop(uri.toString());
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -744,9 +1024,12 @@ class _AddDownloadDialog extends StatelessWidget {
               ),
               const SizedBox(height: 21),
               TextField(
-                controller: controller,
+                controller: widget.controller,
                 autofocus: true,
                 keyboardType: TextInputType.url,
+                onChanged: (_) {
+                  if (_errorText != null) setState(() => _errorText = null);
+                },
                 decoration: InputDecoration(
                   labelText: 'Download URL',
                   hintText: 'https://example.com/file.zip',
@@ -755,8 +1038,9 @@ class _AddDownloadDialog extends StatelessWidget {
                     borderRadius: BorderRadius.circular(9),
                   ),
                   contentPadding: const EdgeInsets.symmetric(vertical: 15),
+                  errorText: _errorText,
                 ),
-                onSubmitted: (value) => Navigator.of(context).pop(value),
+                onSubmitted: (_) => _submit(),
               ),
               const SizedBox(height: 22),
               Row(
@@ -768,7 +1052,7 @@ class _AddDownloadDialog extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   FilledButton(
-                    onPressed: () => Navigator.of(context).pop(controller.text),
+                    onPressed: _submit,
                     child: const Text('Add to queue'),
                   ),
                 ],
