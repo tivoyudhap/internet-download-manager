@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 
 import 'models/download_task.dart';
+import 'services/browser_bridge_server.dart';
 import 'services/download_queue_controller.dart';
 import 'services/download_queue_store.dart';
 
@@ -53,6 +55,8 @@ class DownloadsPage extends StatefulWidget {
 
 class _DownloadsPageState extends State<DownloadsPage> {
   late final DownloadQueueController _queue;
+  DownloadQueueStore? _queueStore;
+  BrowserBridgeServer? _browserBridge;
   final _searchController = TextEditingController();
 
   static const _categories = <_Category>[
@@ -76,13 +80,47 @@ class _DownloadsPageState extends State<DownloadsPage> {
   @override
   void initState() {
     super.initState();
-    _queue =
-        widget.queueController ?? DownloadQueueController(DownloadQueueStore());
+    if (widget.queueController == null) {
+      _queueStore = DownloadQueueStore();
+      _queue = DownloadQueueController(_queueStore!);
+      unawaited(_startBrowserBridge());
+    } else {
+      _queue = widget.queueController!;
+    }
     _queue.load();
+  }
+
+  Future<void> _startBrowserBridge() async {
+    try {
+      final tokenFile = await _queueStore!.browserBridgeTokenFile();
+      await tokenFile.parent.create(recursive: true);
+      final random = Random.secure();
+      final token = List<int>.generate(
+        32,
+        (_) => random.nextInt(256),
+      ).map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+      await tokenFile.writeAsString(token, flush: true);
+      final bridge = await BrowserBridgeServer.start(
+        token: token,
+        onDownloadUrl: (url) async {
+          await _queue.addUrl(url);
+          unawaited(_queue.processQueue());
+        },
+      );
+      if (!mounted) {
+        await bridge.close();
+      } else {
+        _browserBridge = bridge;
+      }
+    } catch (error) {
+      debugPrint('Browser bridge could not start: $error');
+    }
   }
 
   @override
   void dispose() {
+    final bridge = _browserBridge;
+    if (bridge != null) unawaited(bridge.close());
     _queue.dispose();
     _searchController.dispose();
     super.dispose();

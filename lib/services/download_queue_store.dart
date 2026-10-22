@@ -34,6 +34,11 @@ class DownloadQueueStore {
     return _join(home, 'Downloads');
   }
 
+  Future<File> browserBridgeTokenFile() async {
+    final queueFile = await _queueFile();
+    return File(_join(queueFile.parent.path, 'browser_bridge.token'));
+  }
+
   Future<File> _queueFile() async {
     final appSupportPath = supportDirectory?.path;
     final appSupportDirectory =

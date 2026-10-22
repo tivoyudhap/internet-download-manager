@@ -67,6 +67,15 @@ void main() {
     );
   });
 
+  test('stores the browser bridge token beside the persisted queue', () async {
+    final tokenFile = await store.browserBridgeTokenFile();
+
+    expect(
+      tokenFile.path,
+      '${temporaryDirectory.path}${Platform.pathSeparator}support${Platform.pathSeparator}InternetDownloadManager${Platform.pathSeparator}browser_bridge.token',
+    );
+  });
+
   test('reports malformed persisted JSON instead of returning partial data', () async {
     final queueFile = File(
       '${temporaryDirectory.path}${Platform.pathSeparator}support${Platform.pathSeparator}InternetDownloadManager${Platform.pathSeparator}downloads.json',
