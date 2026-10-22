@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:internet_download_manager/main.dart';
@@ -14,6 +16,30 @@ class _ImmediateDownloadEngine implements DownloadEngine {
   }) async {
     onProgress(receivedBytes: 1024, totalBytes: 1024, bytesPerSecond: 512);
     return DownloadResult(fileName: task.fileName, totalBytes: 1024);
+  }
+}
+
+class _ControlledDownloadEngine implements DownloadEngine {
+  final result = Completer<DownloadResult>();
+
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+  }) {
+    onProgress(receivedBytes: 512, totalBytes: 1024, bytesPerSecond: 256);
+    return result.future;
+  }
+}
+
+class _FailingDownloadEngine implements DownloadEngine {
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+  }) async {
+    onProgress(receivedBytes: 128, totalBytes: 1024, bytesPerSecond: 64);
+    throw const DownloadException('Network error: connection refused');
   }
 }
 
@@ -77,6 +103,62 @@ void main() {
 
     expect(find.text('Enter a valid HTTP or HTTPS URL.'), findsOneWidget);
     expect(find.text('Add new download'), findsOneWidget);
+  });
+
+  testWidgets('shows live progress, speed, and ETA while downloading', (
+    WidgetTester tester,
+  ) async {
+    final engine = _ControlledDownloadEngine();
+    final controller = DownloadQueueController(
+      _MemoryQueueStore(),
+      engine: engine,
+    );
+    await tester.pumpWidget(DownloadManagerApp(queueController: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add URL'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextField).last,
+      'https://example.com/large.iso',
+    );
+    await tester.tap(find.text('Add to queue'));
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('large.iso'), findsOneWidget);
+    expect(find.text('Downloading'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+    expect(find.text('256 B/s · 2 sec left'), findsOneWidget);
+    expect(find.text('512 B / 1.0 KB'), findsOneWidget);
+
+    engine.result.complete(
+      const DownloadResult(fileName: 'large.iso', totalBytes: 1024),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Completed'), findsNWidgets(2));
+  });
+
+  testWidgets('shows the download error and received bytes on failure', (
+    WidgetTester tester,
+  ) async {
+    final controller = DownloadQueueController(
+      _MemoryQueueStore(),
+      engine: _FailingDownloadEngine(),
+    );
+    await tester.pumpWidget(DownloadManagerApp(queueController: controller));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Add URL'));
+    await tester.pumpAndSettle();
+    await tester.enterText(
+      find.byType(TextField).last,
+      'https://example.com/unavailable.zip',
+    );
+    await tester.tap(find.text('Add to queue'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Failed'), findsOneWidget);
+    expect(find.text('Network error: connection refused'), findsOneWidget);
+    expect(find.text('128 B / 1.0 KB'), findsOneWidget);
   });
 
   testWidgets('category selection and search filter queued items', (
