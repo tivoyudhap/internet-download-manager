@@ -202,6 +202,18 @@ class _DownloadsPageState extends State<DownloadsPage> {
                                           isLoading: _queue.isLoading,
                                           loadError: _queue.loadError,
                                           onAdd: _showAddDownloadDialog,
+                                          onPause: (task) => unawaited(
+                                            _queue.pauseDownload(task.id),
+                                          ),
+                                          onResume: (task) => unawaited(
+                                            _queue.resumeDownload(task.id),
+                                          ),
+                                          onCancel: (task) => unawaited(
+                                            _queue.cancelDownload(task.id),
+                                          ),
+                                          onRetry: (task) => unawaited(
+                                            _queue.retryDownload(task.id),
+                                          ),
                                         ),
                                       ],
                                     ),
@@ -691,6 +703,10 @@ class _DownloadListCard extends StatelessWidget {
     required this.isLoading,
     required this.loadError,
     required this.onAdd,
+    required this.onPause,
+    required this.onResume,
+    required this.onCancel,
+    required this.onRetry,
   });
 
   final String title;
@@ -698,6 +714,10 @@ class _DownloadListCard extends StatelessWidget {
   final bool isLoading;
   final String? loadError;
   final VoidCallback onAdd;
+  final ValueChanged<DownloadTask> onPause;
+  final ValueChanged<DownloadTask> onResume;
+  final ValueChanged<DownloadTask> onCancel;
+  final ValueChanged<DownloadTask> onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -740,7 +760,14 @@ class _DownloadListCard extends StatelessWidget {
           const _TableHeader(),
           const Divider(height: 1, color: Color(0xFFE8EDF4)),
           if (tasks.isNotEmpty)
-            for (final task in tasks) _DownloadRow(task: task)
+            for (final task in tasks)
+              _DownloadRow(
+                task: task,
+                onPause: onPause,
+                onResume: onResume,
+                onCancel: onCancel,
+                onRetry: onRetry,
+              )
           else
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 52, horizontal: 24),
@@ -811,9 +838,19 @@ class _DownloadListCard extends StatelessWidget {
 }
 
 class _DownloadRow extends StatelessWidget {
-  const _DownloadRow({required this.task});
+  const _DownloadRow({
+    required this.task,
+    required this.onPause,
+    required this.onResume,
+    required this.onCancel,
+    required this.onRetry,
+  });
 
   final DownloadTask task;
+  final ValueChanged<DownloadTask> onPause;
+  final ValueChanged<DownloadTask> onResume;
+  final ValueChanged<DownloadTask> onCancel;
+  final ValueChanged<DownloadTask> onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -950,7 +987,57 @@ class _DownloadRow extends StatelessWidget {
                   ),
                 ),
               ),
-              const SizedBox(width: 38),
+              SizedBox(
+                width: 38,
+                child: task.status == DownloadStatus.completed
+                    ? null
+                    : PopupMenuButton<String>(
+                        tooltip: 'Download actions',
+                        onSelected: (action) {
+                          switch (action) {
+                            case 'pause':
+                              onPause(task);
+                            case 'resume':
+                              onResume(task);
+                            case 'cancel':
+                              onCancel(task);
+                            case 'retry':
+                              onRetry(task);
+                          }
+                        },
+                        itemBuilder: (context) => switch (task.status) {
+                          DownloadStatus.queued => const [
+                            PopupMenuItem(
+                              value: 'cancel',
+                              child: Text('Cancel'),
+                            ),
+                          ],
+                          DownloadStatus.downloading => const [
+                            PopupMenuItem(value: 'pause', child: Text('Pause')),
+                            PopupMenuItem(
+                              value: 'cancel',
+                              child: Text('Cancel'),
+                            ),
+                          ],
+                          DownloadStatus.paused => const [
+                            PopupMenuItem(
+                              value: 'resume',
+                              child: Text('Resume'),
+                            ),
+                            PopupMenuItem(
+                              value: 'cancel',
+                              child: Text('Cancel'),
+                            ),
+                          ],
+                          DownloadStatus.failed ||
+                          DownloadStatus.canceled => const [
+                            PopupMenuItem(value: 'retry', child: Text('Retry')),
+                          ],
+                          DownloadStatus.completed => const [],
+                        },
+                        icon: const Icon(Icons.more_vert_rounded, size: 18),
+                      ),
+              ),
             ],
           ),
         ),

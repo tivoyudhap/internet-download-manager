@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:internet_download_manager/models/download_task.dart';
@@ -15,6 +16,7 @@ class _TestDownloadEngine implements DownloadEngine {
   Future<DownloadResult> download(
     DownloadTask task, {
     required DownloadProgressCallback onProgress,
+    DownloadControl? control,
   }) async {
     onProgress(receivedBytes: 512, totalBytes: 1024, bytesPerSecond: 256);
     if (failure != null) throw DownloadException(failure!);
@@ -32,6 +34,39 @@ class _FailingSaveStore extends DownloadQueueStore {
   @override
   Future<void> save(List<DownloadTask> tasks) async {
     throw const FileSystemException('disk is unavailable');
+  }
+}
+
+class _ControlledDownloadEngine implements DownloadEngine {
+  final started = Completer<void>();
+  final finish = Completer<void>();
+
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+    DownloadControl? control,
+  }) async {
+    onProgress(receivedBytes: 256, totalBytes: 1024, bytesPerSecond: 128);
+    started.complete();
+    await finish.future;
+    await control?.waitUntilResumed();
+    return DownloadResult(fileName: task.fileName, totalBytes: 1024);
+  }
+}
+
+class _FailOnceDownloadEngine implements DownloadEngine {
+  int calls = 0;
+
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+    DownloadControl? control,
+  }) async {
+    calls++;
+    if (calls == 1) throw const DownloadException('temporary failure');
+    return DownloadResult(fileName: task.fileName, totalBytes: 64);
   }
 }
 
@@ -196,4 +231,115 @@ void main() {
     expect(controller.tasks.single.errorMessage, 'Server returned HTTP 404.');
     expect((await store.load()).single.status, DownloadStatus.failed);
   });
+
+  test('pauses and resumes an active download', () async {
+    final engine = _ControlledDownloadEngine();
+    final controller = DownloadQueueController(store, engine: engine);
+    addTearDown(controller.dispose);
+    await controller.load();
+    final task = await controller.addUrl('https://example.com/file.zip');
+    final processing = controller.processQueue();
+    await engine.started.future;
+
+    await controller.pauseDownload(task.id);
+    expect(controller.tasks.single.status, DownloadStatus.paused);
+    expect((await store.load()).single.status, DownloadStatus.paused);
+
+    await controller.resumeDownload(task.id);
+    expect(controller.tasks.single.status, DownloadStatus.downloading);
+    engine.finish.complete();
+    await processing;
+    expect(controller.tasks.single.status, DownloadStatus.completed);
+  });
+
+  test('cancels an active download and persists the canceled state', () async {
+    final engine = _ControlledDownloadEngine();
+    final controller = DownloadQueueController(store, engine: engine);
+    addTearDown(controller.dispose);
+    await controller.load();
+    final task = await controller.addUrl('https://example.com/file.zip');
+    final processing = controller.processQueue();
+    await engine.started.future;
+
+    await controller.cancelDownload(task.id);
+    expect(controller.tasks.single.status, DownloadStatus.canceled);
+    engine.finish.complete();
+    await processing;
+    expect((await store.load()).single.status, DownloadStatus.canceled);
+  });
+
+  test('cancels a queued task without starting the engine', () async {
+    final engine = _FailOnceDownloadEngine();
+    final controller = DownloadQueueController(store, engine: engine);
+    addTearDown(controller.dispose);
+    await controller.load();
+    final task = await controller.addUrl('https://example.com/file.zip');
+
+    await controller.cancelDownload(task.id);
+
+    expect(controller.tasks.single.status, DownloadStatus.canceled);
+    expect(engine.calls, 0);
+    expect((await store.load()).single.status, DownloadStatus.canceled);
+  });
+
+  test('retrying a canceled task queues a clean new attempt', () async {
+    final engine = _TestDownloadEngine();
+    final controller = DownloadQueueController(store, engine: engine);
+    addTearDown(controller.dispose);
+    await controller.load();
+    final task = await controller.addUrl('https://example.com/file.zip');
+    await controller.cancelDownload(task.id);
+
+    await controller.retryDownload(task.id);
+
+    expect(controller.tasks.single.status, DownloadStatus.completed);
+    expect(controller.tasks.single.receivedBytes, 1024);
+  });
+
+  test('resuming a saved paused task starts a fresh transfer', () async {
+    final pausedTask = DownloadTask(
+      id: 'paused-task',
+      url: 'https://example.com/file.zip',
+      fileName: 'file.zip',
+      destinationDirectory: '/tmp/Downloads',
+      status: DownloadStatus.paused,
+      createdAt: DateTime.utc(2026),
+      totalBytes: 1024,
+      receivedBytes: 512,
+      speedBytesPerSecond: 128,
+    );
+    await store.save([pausedTask]);
+    final controller = DownloadQueueController(
+      store,
+      engine: _TestDownloadEngine(),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    await controller.resumeDownload(pausedTask.id);
+
+    expect(controller.tasks.single.status, DownloadStatus.completed);
+    expect(controller.tasks.single.receivedBytes, 1024);
+  });
+
+  test(
+    'retries a failed task with cleared error and transfer progress',
+    () async {
+      final engine = _FailOnceDownloadEngine();
+      final controller = DownloadQueueController(store, engine: engine);
+      addTearDown(controller.dispose);
+      await controller.load();
+      final task = await controller.addUrl('https://example.com/file.zip');
+      await controller.processQueue();
+      expect(controller.tasks.single.status, DownloadStatus.failed);
+
+      await controller.retryDownload(task.id);
+
+      final retried = controller.tasks.single;
+      expect(engine.calls, 2);
+      expect(retried.status, DownloadStatus.completed);
+      expect(retried.errorMessage, isNull);
+      expect(retried.receivedBytes, 64);
+    },
+  );
 }

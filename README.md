@@ -19,4 +19,7 @@ On Windows, use `flutter run -d windows`. Build release versions with `flutter b
 
 ## Project status
 
-The Flutter desktop scaffold is initialized. Download queue, transfer engine, persistence, and browser integration are not implemented yet.
+The macOS and Windows Flutter desktop app includes a persisted download queue,
+HTTP/HTTPS downloads, transfer progress, and per-download pause, resume, cancel,
+and retry actions. Browser integration, segmented downloads, and automatic
+resume of partial files are planned for later phases.

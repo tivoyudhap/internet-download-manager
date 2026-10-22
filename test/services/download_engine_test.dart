@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -117,10 +118,10 @@ void main() {
     () async {
       server.listen((request) async {
         request.response.headers.contentLength = 20;
-      final socket = await request.response.detachSocket(writeHeaders: true);
-      socket.add([1, 2, 3, 4]);
-      await socket.flush();
-      await socket.close();
+        final socket = await request.response.detachSocket(writeHeaders: true);
+        socket.add([1, 2, 3, 4]);
+        await socket.flush();
+        await socket.close();
       });
       final download = task('truncated.bin');
 
@@ -194,6 +195,70 @@ void main() {
         ),
       ),
     );
+  });
+
+  test('pauses transfer work until the control is resumed', () async {
+    final control = DownloadControl()..pause();
+    var resumed = false;
+    final waiting = control.waitUntilResumed().then((_) => resumed = true);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    expect(resumed, isFalse);
+
+    control.resume();
+    await waiting;
+    expect(resumed, isTrue);
+  });
+
+  test('cancels a paused transfer and wakes its waiter', () async {
+    final control = DownloadControl()..pause();
+    final waiting = control.waitUntilResumed();
+    control.cancel();
+
+    await expectLater(waiting, throwsA(isA<DownloadCanceledException>()));
+    expect(control.isCanceled, isTrue);
+  });
+
+  test('cancellation closes the active HTTP client', () async {
+    final responseStarted = Completer<void>();
+    server.listen((request) async {
+      request.response.contentLength = 100000;
+      request.response.add([1, 2, 3]);
+      await request.response.flush();
+      responseStarted.complete();
+      await Completer<void>().future;
+    });
+    final control = DownloadControl();
+    final download = HttpDownloadEngine().download(
+      task('canceled.bin'),
+      onProgress: _ignoreProgress,
+      control: control,
+    );
+    await responseStarted.future;
+    control.cancel();
+
+    await expectLater(download, throwsA(isA<DownloadCanceledException>()));
+    expect(
+      await File('${temporaryDirectory.path}/canceled.bin').exists(),
+      isFalse,
+    );
+  });
+
+  test('cancels while waiting for the response headers', () async {
+    final requestReceived = Completer<void>();
+    server.listen((request) async {
+      requestReceived.complete();
+      await Completer<void>().future;
+    });
+    final control = DownloadControl();
+    final download = HttpDownloadEngine().download(
+      task('waiting.bin'),
+      onProgress: _ignoreProgress,
+      control: control,
+    );
+    await requestReceived.future;
+    control.cancel();
+
+    await expectLater(download, throwsA(isA<DownloadCanceledException>()));
   });
 }
 

@@ -19,6 +19,8 @@ class DownloadQueueController extends ChangeNotifier {
   Future<void> _mutationTail = Future<void>.value();
   Timer? _persistTimer;
   bool _isProcessingQueue = false;
+  String? _activeTaskId;
+  DownloadControl? _activeControl;
 
   List<DownloadTask> get tasks => List.unmodifiable(_tasks);
   bool get isLoading => _isLoading;
@@ -77,10 +79,14 @@ class DownloadQueueController extends ChangeNotifier {
           clearError: true,
         );
         await _replaceTask(task, persist: true);
+        final control = DownloadControl();
+        _activeTaskId = task.id;
+        _activeControl = control;
 
         try {
           final result = await _engine.download(
             task,
+            control: control,
             onProgress:
                 ({
                   required receivedBytes,
@@ -95,6 +101,20 @@ class DownloadQueueController extends ChangeNotifier {
                   );
                 },
           );
+          if (control.isCanceled) {
+            final latestTask = _tasks.firstWhere(
+              (queuedTask) => queuedTask.id == task.id,
+              orElse: () => task,
+            );
+            await _replaceTask(
+              latestTask.copyWith(
+                status: DownloadStatus.canceled,
+                speedBytesPerSecond: 0,
+              ),
+              persist: true,
+            );
+            continue;
+          }
           await _replaceTask(
             task.copyWith(
               fileName: result.fileName,
@@ -112,12 +132,20 @@ class DownloadQueueController extends ChangeNotifier {
           );
           await _replaceTask(
             latestTask.copyWith(
-              status: DownloadStatus.failed,
+              status: error is DownloadCanceledException
+                  ? DownloadStatus.canceled
+                  : DownloadStatus.failed,
               speedBytesPerSecond: 0,
-              errorMessage: error.toString(),
+              errorMessage: error is DownloadCanceledException
+                  ? null
+                  : error.toString(),
+              clearError: error is DownloadCanceledException,
             ),
             persist: true,
           );
+        } finally {
+          _activeTaskId = null;
+          _activeControl = null;
         }
       }
     } finally {
@@ -125,6 +153,85 @@ class DownloadQueueController extends ChangeNotifier {
       _persistTimer = null;
       _isProcessingQueue = false;
     }
+  }
+
+  Future<void> pauseDownload(String id) async {
+    final task = _taskById(id);
+    if (task == null ||
+        task.status != DownloadStatus.downloading ||
+        _activeTaskId != id ||
+        _activeControl == null) {
+      return;
+    }
+    await _replaceTask(
+      task.copyWith(status: DownloadStatus.paused, speedBytesPerSecond: 0),
+      persist: true,
+    );
+    _activeControl?.pause();
+  }
+
+  Future<void> resumeDownload(String id) async {
+    final task = _taskById(id);
+    if (task == null || task.status != DownloadStatus.paused) return;
+
+    final control = _activeTaskId == id ? _activeControl : null;
+    if (control == null) {
+      await _replaceTask(
+        task.copyWith(
+          status: DownloadStatus.queued,
+          clearError: true,
+          clearProgress: true,
+        ),
+        persist: true,
+      );
+      await processQueue();
+      return;
+    }
+    await _replaceTask(
+      task.copyWith(status: DownloadStatus.downloading),
+      persist: true,
+    );
+    control.resume();
+  }
+
+  Future<void> cancelDownload(String id) async {
+    final task = _taskById(id);
+    if (task == null ||
+        task.status == DownloadStatus.completed ||
+        task.status == DownloadStatus.failed ||
+        task.status == DownloadStatus.canceled) {
+      return;
+    }
+    if (_activeTaskId == id) _activeControl?.cancel();
+    await _replaceTask(
+      task.copyWith(status: DownloadStatus.canceled, speedBytesPerSecond: 0),
+      persist: true,
+    );
+  }
+
+  Future<void> retryDownload(String id) async {
+    final task = _taskById(id);
+    if (task == null ||
+        (task.status != DownloadStatus.failed &&
+            task.status != DownloadStatus.canceled)) {
+      return;
+    }
+    await _replaceTask(
+      task.copyWith(
+        status: DownloadStatus.queued,
+        clearError: true,
+        clearProgress: true,
+      ),
+      persist: true,
+    );
+    await processQueue();
+  }
+
+  DownloadTask? _taskById(String id) {
+    for (final task in _tasks) {
+      if (task.id == id) return task;
+    }
+    return null;
   }
 
   void _updateProgress(

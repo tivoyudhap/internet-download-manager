@@ -43,6 +43,7 @@ class DownloadTask {
     double? speedBytesPerSecond,
     String? errorMessage,
     bool clearError = false,
+    bool clearProgress = false,
   }) {
     return DownloadTask(
       id: id,
@@ -51,9 +52,11 @@ class DownloadTask {
       destinationDirectory: destinationDirectory,
       status: status ?? this.status,
       createdAt: createdAt,
-      totalBytes: totalBytes ?? this.totalBytes,
-      receivedBytes: receivedBytes ?? this.receivedBytes,
-      speedBytesPerSecond: speedBytesPerSecond ?? this.speedBytesPerSecond,
+      totalBytes: clearProgress ? null : totalBytes ?? this.totalBytes,
+      receivedBytes: clearProgress ? 0 : receivedBytes ?? this.receivedBytes,
+      speedBytesPerSecond: clearProgress
+          ? 0
+          : speedBytesPerSecond ?? this.speedBytesPerSecond,
       errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
     );
   }
