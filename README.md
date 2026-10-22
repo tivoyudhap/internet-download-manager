@@ -21,6 +21,13 @@ Closing the main window keeps the app running in the macOS menu bar or Windows
 system tray. Use **Buka Internet Download Manager** to restore it, or **Keluar**
 to stop the app and its active downloads.
 
+Video stream downloads use FFmpeg. Install an `ffmpeg` build that includes HLS
+and DASH input demuxers on the target computer and make sure it is available on
+`PATH`. The Chrome extension requests access to all sites so it can detect HLS
+(`.m3u8`) and DASH (`.mpd`) manifests; captured session headers are held in
+memory and are not written to the saved queue. DRM-protected streams are not
+supported.
+
 ## Google Chrome extension (development)
 
 The unpacked extension adds **Download with IDM** to link, video, audio, and

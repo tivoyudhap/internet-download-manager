@@ -55,6 +55,23 @@ class _ControlledDownloadEngine implements DownloadEngine {
   }
 }
 
+class _CancelAwareDownloadEngine implements DownloadEngine {
+  final started = Completer<void>();
+  bool wasCanceled = false;
+
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+    DownloadControl? control,
+  }) async {
+    started.complete();
+    await control!.whenCanceled;
+    wasCanceled = true;
+    throw const DownloadCanceledException();
+  }
+}
+
 class _FailOnceDownloadEngine implements DownloadEngine {
   int calls = 0;
 
@@ -341,6 +358,27 @@ void main() {
     await processing;
     expect((await store.load()).single.status, DownloadStatus.canceled);
   });
+
+  test(
+    'disposing the controller stops active work for background app exit',
+    () async {
+      final engine = _CancelAwareDownloadEngine();
+      final controller = DownloadQueueController(store, engine: engine);
+      await controller.load();
+      await controller.addUrl('https://example.com/file.zip');
+      final processing = controller.processQueue();
+      await engine.started.future;
+
+      controller.dispose();
+      await processing;
+
+      expect(engine.wasCanceled, isTrue);
+      final recoveredController = DownloadQueueController(store);
+      addTearDown(recoveredController.dispose);
+      await recoveredController.load();
+      expect(recoveredController.tasks.single.status, DownloadStatus.paused);
+    },
+  );
 
   test('cancels a queued task without starting the engine', () async {
     final engine = _FailOnceDownloadEngine();

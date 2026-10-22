@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import '../models/download_task.dart';
@@ -15,6 +16,7 @@ class DownloadControl {
   Completer<void>? _resumeCompleter;
   final Completer<void> _canceledCompleter = Completer<void>();
   void Function()? _cancelHandler;
+  void Function()? _pauseHandler;
 
   bool get isPaused => _isPaused;
   bool get isCanceled => _isCanceled;
@@ -34,10 +36,16 @@ class DownloadControl {
     }
   }
 
+  void registerPauseHandler(void Function() handler) {
+    _pauseHandler = handler;
+    if (_isPaused) handler();
+  }
+
   void pause() {
     if (_isCanceled || _isPaused) return;
     _isPaused = true;
     _resumeCompleter = Completer<void>();
+    _pauseHandler?.call();
   }
 
   void resume() {
@@ -101,6 +109,13 @@ class HttpDownloadEngine implements DownloadEngine {
     DownloadControl? control,
   }) async {
     final uri = Uri.parse(task.url);
+    if (task.isStream) {
+      return FfmpegStreamDownloadEngine().download(
+        task,
+        onProgress: onProgress,
+        control: control,
+      );
+    }
     final destinationDirectory = Directory(task.destinationDirectory);
     try {
       await destinationDirectory.create(recursive: true);
@@ -123,6 +138,7 @@ class HttpDownloadEngine implements DownloadEngine {
 
     try {
       final request = await _withCancellation(client.getUrl(uri), control);
+      _setRequestHeaders(request, task.requestHeaders);
       if (existingBytes > 0) {
         request.headers.set(HttpHeaders.rangeHeader, 'bytes=$existingBytes-');
       } else {
@@ -156,6 +172,7 @@ class HttpDownloadEngine implements DownloadEngine {
             partialFile: partialFile,
             totalBytes: probeRange.total!,
             validator: _rangeValidator(response),
+            requestHeaders: task.requestHeaders,
             onProgress: onProgress,
             control: control,
           );
@@ -166,6 +183,7 @@ class HttpDownloadEngine implements DownloadEngine {
           client.getUrl(uri),
           control,
         );
+        _setRequestHeaders(restartedRequest, task.requestHeaders);
         control?.registerCancelHandler(() => restartedRequest.abort());
         response = await _withCancellation(restartedRequest.close(), control);
       }
@@ -328,6 +346,7 @@ class HttpDownloadEngine implements DownloadEngine {
     required File partialFile,
     required int totalBytes,
     required _RangeValidator? validator,
+    required Map<String, String> requestHeaders,
     required DownloadProgressCallback onProgress,
     required DownloadControl? control,
   }) async {
@@ -386,6 +405,7 @@ class HttpDownloadEngine implements DownloadEngine {
           if (offset > segment.end) return;
 
           final request = await _withCancellation(client.getUrl(uri), control);
+          _setRequestHeaders(request, requestHeaders);
           request.headers.set(
             HttpHeaders.rangeHeader,
             'bytes=$offset-${segment.end}',
@@ -553,6 +573,189 @@ class HttpDownloadEngine implements DownloadEngine {
       (_) => throw const DownloadCanceledException(),
     );
     return Future.any<T>([future, canceled]);
+  }
+
+  void _setRequestHeaders(
+    HttpClientRequest request,
+    Map<String, String> headers,
+  ) {
+    for (final entry in headers.entries) {
+      request.headers.set(entry.key, entry.value);
+    }
+  }
+}
+
+class FfmpegStreamDownloadEngine implements DownloadEngine {
+  FfmpegStreamDownloadEngine({
+    String? executable,
+    Future<Process> Function(String, List<String>)? processFactory,
+  }) : executable =
+           executable ?? Platform.environment['IDM_FFMPEG_PATH'] ?? 'ffmpeg',
+       _processFactory = processFactory ?? Process.start;
+
+  final String executable;
+  final Future<Process> Function(String, List<String>) _processFactory;
+
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+    DownloadControl? control,
+  }) async {
+    final directory = Directory(task.destinationDirectory);
+    try {
+      await directory.create(recursive: true);
+    } on FileSystemException catch (error) {
+      throw DownloadException('File error: ${error.message}');
+    }
+    final destination = await _availableDestination(directory, task.fileName);
+    final partial = File('${destination.path}.${task.id}.part.mkv');
+
+    while (true) {
+      await control?.waitUntilResumed();
+      if (control?.isCanceled ?? false) throw const DownloadCanceledException();
+      if (await partial.exists()) await partial.delete();
+
+      final arguments = <String>[
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-y',
+      ];
+      final inputHeaders = Map<String, String>.of(task.requestHeaders);
+      final cookie = inputHeaders.remove('cookie');
+      if (cookie != null && cookie.isNotEmpty) {
+        final host = Uri.parse(task.url).host;
+        final scopedCookies = cookie
+            .split(';')
+            .map((part) => part.trim())
+            .where((part) => part.contains('='))
+            .map((part) => '$part; Domain=$host; Path=/')
+            .join('\n');
+        if (scopedCookies.isNotEmpty) {
+          arguments.addAll(['-cookies', scopedCookies]);
+        }
+      }
+      if (inputHeaders.isNotEmpty) {
+        final headers = inputHeaders.entries
+            .map((entry) => '${entry.key}: ${entry.value}\r\n')
+            .join();
+        arguments.addAll(['-headers', headers]);
+      }
+      arguments.addAll([
+        '-i',
+        task.url,
+        '-map',
+        '0:v:0?',
+        '-map',
+        '0:a:0?',
+        '-c',
+        'copy',
+        '-progress',
+        'pipe:1',
+        '-nostats',
+        partial.path,
+      ]);
+
+      final Process process;
+      try {
+        process = await _processFactory(await _resolveExecutable(), arguments);
+      } on ProcessException catch (error) {
+        throw DownloadException(
+          'FFmpeg is required to download video streams: ${error.message}',
+        );
+      }
+      control?.registerCancelHandler(() => process.kill());
+      control?.registerPauseHandler(() => process.kill());
+
+      final stopwatch = Stopwatch()..start();
+      var receivedBytes = 0;
+      final progressTimer = Timer.periodic(const Duration(milliseconds: 300), (
+        _,
+      ) async {
+        if (!await partial.exists()) return;
+        final size = await partial.length();
+        if (size == receivedBytes) return;
+        receivedBytes = size;
+        onProgress(
+          receivedBytes: size,
+          totalBytes: null,
+          bytesPerSecond: stopwatch.elapsedMicroseconds == 0
+              ? 0
+              : size * 1000000 / stopwatch.elapsedMicroseconds,
+        );
+      });
+      unawaited(process.stdout.drain<void>());
+      final stderrFuture = process.stderr.transform(utf8.decoder).join();
+      final exitCode = await process.exitCode;
+      progressTimer.cancel();
+      final stderr = await stderrFuture;
+      control?.registerPauseHandler(() {});
+
+      if (control?.isCanceled ?? false) {
+        if (await partial.exists()) await partial.delete();
+        throw const DownloadCanceledException();
+      }
+      if (control?.isPaused ?? false) continue;
+      if (exitCode != 0) {
+        if (await partial.exists()) await partial.delete();
+        throw DownloadException(
+          stderr.trim().isEmpty
+              ? 'FFmpeg could not download this video stream.'
+              : stderr.trim(),
+        );
+      }
+      if (!await partial.exists() || await partial.length() == 0) {
+        throw const DownloadException('FFmpeg returned an empty video file.');
+      }
+      final size = await partial.length();
+      await partial.rename(destination.path);
+      onProgress(
+        receivedBytes: size,
+        totalBytes: size,
+        bytesPerSecond: stopwatch.elapsedMicroseconds == 0
+            ? 0
+            : size * 1000000 / stopwatch.elapsedMicroseconds,
+      );
+      return DownloadResult(
+        fileName: destination.path.split(Platform.pathSeparator).last,
+        totalBytes: size,
+      );
+    }
+  }
+
+  Future<String> _resolveExecutable() async {
+    if (executable.contains(Platform.pathSeparator)) return executable;
+    if (Platform.isMacOS) {
+      for (final candidate in [
+        '/opt/homebrew/bin/$executable',
+        '/usr/local/bin/$executable',
+      ]) {
+        final file = File(candidate);
+        if (await file.exists()) return candidate;
+      }
+    }
+    return executable;
+  }
+
+  Future<File> _availableDestination(
+    Directory directory,
+    String requestedName,
+  ) async {
+    var candidate = File(
+      '${directory.path}${Platform.pathSeparator}$requestedName',
+    );
+    if (!await candidate.exists()) return candidate;
+    final dot = requestedName.lastIndexOf('.');
+    final stem = dot > 0 ? requestedName.substring(0, dot) : requestedName;
+    final extension = dot > 0 ? requestedName.substring(dot) : '';
+    for (var suffix = 1; ; suffix++) {
+      candidate = File(
+        '${directory.path}${Platform.pathSeparator}$stem ($suffix)$extension',
+      );
+      if (!await candidate.exists()) return candidate;
+    }
   }
 }
 

@@ -19,6 +19,7 @@ class DownloadQueueController extends ChangeNotifier {
   Future<void> _mutationTail = Future<void>.value();
   Timer? _persistTimer;
   bool _isProcessingQueue = false;
+  bool _isDisposed = false;
   String? _activeTaskId;
   DownloadControl? _activeControl;
 
@@ -61,7 +62,12 @@ class DownloadQueueController extends ChangeNotifier {
     }
   }
 
-  Future<DownloadTask> addUrl(String url) async {
+  Future<DownloadTask> addUrl(
+    String url, {
+    bool isStream = false,
+    String? suggestedFileName,
+    Map<String, String> requestHeaders = const {},
+  }) async {
     await load();
     if (_loadError != null) {
       throw StateError(
@@ -69,7 +75,13 @@ class DownloadQueueController extends ChangeNotifier {
       );
     }
     final destinationDirectory = await _store.defaultDownloadDirectory();
-    final task = DownloadTask.fromUrl(url, destinationDirectory);
+    final task = DownloadTask.fromUrl(
+      url,
+      destinationDirectory,
+      isStream: isStream,
+      suggestedFileName: suggestedFileName,
+      requestHeaders: requestHeaders,
+    );
     await _serialize(() async {
       final updatedTasks = [task, ..._tasks];
       await _store.save(updatedTasks);
@@ -254,6 +266,7 @@ class DownloadQueueController extends ChangeNotifier {
     required int? totalBytes,
     required double bytesPerSecond,
   }) {
+    if (_isDisposed) return;
     final index = _tasks.indexWhere((task) => task.id == id);
     if (index == -1) return;
     _tasks[index] = _tasks[index].copyWith(
@@ -280,7 +293,9 @@ class DownloadQueueController extends ChangeNotifier {
     DownloadTask updatedTask, {
     required bool persist,
   }) async {
+    if (_isDisposed) return;
     await _serialize(() async {
+      if (_isDisposed) return;
       final updatedTasks = List<DownloadTask>.of(_tasks);
       final index = updatedTasks.indexWhere(
         (task) => task.id == updatedTask.id,
@@ -308,7 +323,9 @@ class DownloadQueueController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _isDisposed = true;
     _persistTimer?.cancel();
+    _activeControl?.cancel();
     super.dispose();
   }
 }

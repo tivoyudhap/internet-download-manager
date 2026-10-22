@@ -102,8 +102,13 @@ class _DownloadsPageState extends State<DownloadsPage> {
       await tokenFile.writeAsString(token, flush: true);
       final bridge = await BrowserBridgeServer.start(
         token: token,
-        onDownloadUrl: (url) async {
-          await _queue.addUrl(url);
+        onDownloadRequest: (request) async {
+          await _queue.addUrl(
+            request.url,
+            isStream: request.isStream,
+            suggestedFileName: request.suggestedFileName,
+            requestHeaders: request.headers,
+          );
           unawaited(_queue.processQueue());
         },
       );

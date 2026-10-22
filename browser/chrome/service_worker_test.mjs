@@ -6,21 +6,31 @@ import vm from 'node:vm';
 const source = await readFile(new URL('./service_worker.js', import.meta.url), 'utf8');
 
 function loadWorker({ response = { ok: true }, lastError = null } = {}) {
-  const listeners = {};
+  const listeners = { beforeSendHeaders: [], headersReceived: [] };
   const menus = [];
   const nativeMessages = [];
   const badges = [];
   const titles = [];
-  const runtime = { lastError: null };
+  const session = {};
   const chrome = {
     runtime: {
-      ...runtime,
+      lastError: null,
       onInstalled: { addListener: (listener) => { listeners.installed = listener; } },
       sendNativeMessage: (host, message, callback) => {
         nativeMessages.push({ host, message });
         chrome.runtime.lastError = lastError;
         callback(response);
         chrome.runtime.lastError = null;
+      },
+    },
+    webRequest: {
+      onBeforeSendHeaders: { addListener: (listener) => listeners.beforeSendHeaders.push(listener) },
+      onHeadersReceived: { addListener: (listener) => listeners.headersReceived.push(listener) },
+    },
+    storage: {
+      session: {
+        set: async (values) => Object.assign(session, values),
+        get: async (key) => key in session ? { [key]: session[key] } : {},
       },
     },
     contextMenus: {
@@ -33,64 +43,141 @@ function loadWorker({ response = { ok: true }, lastError = null } = {}) {
       setTitle: (value) => titles.push(value.title),
     },
   };
-  vm.runInNewContext(source, {
-    chrome,
-    URL,
-    setTimeout: () => 0,
-  });
-  return { chrome, listeners, menus, nativeMessages, badges, titles };
+  vm.runInNewContext(source, { chrome, URL, Date, setTimeout: () => 0 });
+  return { chrome, listeners, menus, nativeMessages, badges, titles, session };
 }
 
-test('registers one Download with IDM menu for links and media', () => {
+test('registers Download with IDM for links and video/audio elements', () => {
   const worker = loadWorker();
   worker.listeners.installed();
-
   assert.deepEqual(JSON.parse(JSON.stringify(worker.menus)), [{
     id: 'idm-download-with-idm',
     title: 'Download with IDM',
-    contexts: ['link', 'video', 'audio', 'image'],
+    contexts: ['link', 'video', 'audio'],
   }]);
 });
 
-test('sends a link URL through the native messaging host', () => {
+test('sends a direct link as a regular download', async () => {
   const worker = loadWorker();
-  worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: 'https://example.com/file.zip' });
-
+  await worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: 'https://example.com/file.zip' });
   assert.deepEqual(JSON.parse(JSON.stringify(worker.nativeMessages)), [{
     host: 'com.tivoyudhap.internet_download_manager',
-    message: { type: 'add_download', url: 'https://example.com/file.zip' },
+    message: { type: 'add_download', url: 'https://example.com/file.zip', isStream: false, headers: {} },
   }]);
   assert.equal(worker.badges.at(-1), '✓');
 });
 
-test('sends a media source URL when the context is not a link', () => {
+test('sends a direct MP4 media source as a regular download', async () => {
   const worker = loadWorker();
-  worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', srcUrl: 'https://cdn.example.com/movie.mp4' });
-
+  await worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', srcUrl: 'https://cdn.example.com/movie.mp4' });
   assert.equal(worker.nativeMessages[0].message.url, 'https://cdn.example.com/movie.mp4');
+  assert.equal(worker.nativeMessages[0].message.isStream, false);
 });
 
-test('rejects non-HTTP and credentialed URLs before native messaging', () => {
-  for (const url of ['file:///tmp/archive.zip', 'ftp://example.com/archive.zip', 'https://user:pass@example.com/file.zip']) {
+test('recognizes HLS and DASH manifest paths regardless of case or query strings', async () => {
+  for (const url of [
+    'https://cdn.example.com/video.M3U8?token=one',
+    'https://cdn.example.com/manifest.MPD?token=two',
+  ]) {
     const worker = loadWorker();
-    worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: url });
+    await worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: url });
+    assert.equal(worker.nativeMessages[0].message.isStream, true);
+  }
+});
+
+test('uses the captured stream manifest and selected headers for a blob video', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r1', tabId: 7, type: 'media',
+    url: 'https://cdn.example.com/master.m3u8?sig=abc',
+    initiator: 'https://site.example/watch/42',
+    requestHeaders: [
+      { name: 'Cookie', value: 'session=secret' },
+      { name: 'Referer', value: 'https://site.example/watch/42' },
+      { name: 'X-Tracking', value: 'discard-me' },
+    ],
+  });
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm', tabId: 7,
+    srcUrl: 'blob:https://site.example/asset-id',
+  });
+  const message = worker.nativeMessages[0].message;
+  assert.equal(message.url, 'https://cdn.example.com/master.m3u8?sig=abc');
+  assert.equal(message.isStream, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(message.headers)), {
+    cookie: 'session=secret',
+    referer: 'https://site.example/watch/42',
+  });
+});
+
+test('recognizes extensionless manifests by HLS or DASH response MIME type', async () => {
+  for (const [mime, expectedUrl] of [
+    ['application/vnd.apple.mpegurl', 'https://cdn.example.com/play?id=1'],
+    ['application/dash+xml', 'https://cdn.example.com/manifest?id=2'],
+  ]) {
+    const worker = loadWorker();
+    worker.listeners.beforeSendHeaders[0]({
+      requestId: 'r2', tabId: 9, type: 'xmlhttprequest',
+      url: expectedUrl, initiator: 'https://site.example/watch', requestHeaders: [],
+    });
+    worker.listeners.headersReceived[0]({
+      requestId: 'r2', tabId: 9,
+      responseHeaders: [{ name: 'content-type', value: mime }],
+    });
+    await worker.listeners.clicked({
+      menuItemId: 'idm-download-with-idm', tabId: 9,
+      srcUrl: 'blob:https://site.example/player',
+    });
+    assert.equal(worker.nativeMessages[0].message.url, expectedUrl);
+    assert.equal(worker.nativeMessages[0].message.isStream, true);
+  }
+});
+
+test('does not send a blob video when no recent manifest was captured', async () => {
+  const worker = loadWorker();
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm', tabId: 3,
+    srcUrl: 'blob:https://site.example/player',
+  });
+  assert.equal(worker.nativeMessages.length, 0);
+  assert.equal(worker.badges.at(-1), '!');
+});
+
+test('ignores a stream manifest after the capture expires', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r3', tabId: 4, type: 'media',
+    url: 'https://cdn.example.com/old.m3u8', initiator: '', requestHeaders: [],
+  });
+  worker.session['last-stream-4'].observedAt = Date.now() - 31 * 60 * 1000;
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm', tabId: 4,
+    srcUrl: 'blob:https://site.example/player',
+  });
+  assert.equal(worker.nativeMessages.length, 0);
+});
+
+test('rejects non-HTTP, credentialed, and unrelated blob URLs', async () => {
+  for (const url of [
+    'file:///tmp/archive.zip',
+    'ftp://example.com/archive.zip',
+    'https://user:pass@example.com/file.zip',
+  ]) {
+    const worker = loadWorker();
+    await worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: url });
     assert.equal(worker.nativeMessages.length, 0);
     assert.equal(worker.badges.at(-1), '!');
   }
 });
 
-test('shows an error when the desktop app rejects a request', () => {
-  const worker = loadWorker({ response: { ok: false, error: 'Open IDM first.' } });
-  worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: 'https://example.com/file.zip' });
+test('shows an error when the desktop app or native host rejects a request', async () => {
+  const appError = loadWorker({ response: { ok: false, error: 'Open IDM first.' } });
+  await appError.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: 'https://example.com/file.zip' });
+  assert.equal(appError.badges.at(-1), '!');
+  assert.equal(appError.titles.at(-1), 'Open IDM first.');
 
-  assert.equal(worker.badges.at(-1), '!');
-  assert.equal(worker.titles.at(-1), 'Open IDM first.');
-});
-
-test('shows an error when the native host is unavailable', () => {
-  const worker = loadWorker({ lastError: { message: 'Specified native messaging host not found.' } });
-  worker.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: 'https://example.com/file.zip' });
-
-  assert.equal(worker.badges.at(-1), '!');
-  assert.equal(worker.titles.at(-1), 'Could not connect to IDM. Open the desktop app.');
+  const hostError = loadWorker({ lastError: { message: 'Native host missing.' } });
+  await hostError.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: 'https://example.com/file.zip' });
+  assert.equal(hostError.badges.at(-1), '!');
+  assert.equal(hostError.titles.at(-1), 'Could not connect to IDM. Open the desktop app.');
 });

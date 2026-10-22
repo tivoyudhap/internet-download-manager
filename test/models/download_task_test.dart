@@ -26,6 +26,20 @@ void main() {
       expect(task.fileName, 'download');
     });
 
+    test('creates a stream task with a sanitized Matroska file name', () {
+      final task = DownloadTask.fromUrl(
+        'https://cdn.example.com/manifest.m3u8?token=secret',
+        '/tmp/Downloads',
+        isStream: true,
+        suggestedFileName: '../my:video.mp4',
+        requestHeaders: const {'referer': 'https://site.example/watch'},
+      );
+
+      expect(task.fileName, '.._my_video.mkv');
+      expect(task.isStream, isTrue);
+      expect(task.requestHeaders, {'referer': 'https://site.example/watch'});
+    });
+
     test('decodes and sanitizes the URL path into a safe file name', () {
       final task = DownloadTask.fromUrl(
         'https://example.com/files/my%20installer%20%231.zip',
@@ -79,6 +93,19 @@ void main() {
       expect(restored.receivedBytes, task.receivedBytes);
       expect(restored.speedBytesPerSecond, task.speedBytesPerSecond);
       expect(restored.errorMessage, task.errorMessage);
+      expect(restored.requestHeaders, isEmpty);
+    });
+
+    test('does not persist session request headers in the saved queue', () {
+      final task = DownloadTask.fromUrl(
+        'https://cdn.example.com/video.mpd',
+        '/tmp/Downloads',
+        isStream: true,
+        requestHeaders: const {'cookie': 'session=private'},
+      );
+
+      expect(task.toJson().containsKey('requestHeaders'), isFalse);
+      expect(DownloadTask.fromJson(task.toJson()).requestHeaders, isEmpty);
     });
   });
 }

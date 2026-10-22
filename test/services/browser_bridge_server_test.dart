@@ -82,6 +82,56 @@ void main() {
       expect(addedUrls, ['https://example.com/file.zip']);
     });
 
+    test(
+      'forwards stream metadata and session headers to the queue handler',
+      () async {
+        await bridge.close();
+        final requests = <BrowserDownloadRequest>[];
+        bridge = await BrowserBridgeServer.start(
+          token: token,
+          port: 0,
+          onDownloadRequest: (request) async {
+            requests.add(request);
+          },
+        );
+        final response = await post('/downloads', {
+          'type': 'add_download',
+          'url': 'https://cdn.example.com/master.m3u8?sig=abc',
+          'isStream': true,
+          'fileName': 'course video',
+          'headers': {
+            'cookie': 'session=secret',
+            'referer': 'https://site.example/watch',
+          },
+        });
+
+        expect(response.statusCode, HttpStatus.ok);
+        expect(requests, hasLength(1));
+        expect(
+          requests.single.url,
+          'https://cdn.example.com/master.m3u8?sig=abc',
+        );
+        expect(requests.single.isStream, isTrue);
+        expect(requests.single.suggestedFileName, 'course video');
+        expect(requests.single.headers, {
+          'cookie': 'session=secret',
+          'referer': 'https://site.example/watch',
+        });
+      },
+    );
+
+    test('rejects unsafe or unsupported session headers', () async {
+      final response = await post('/downloads', {
+        'type': 'add_download',
+        'url': 'https://cdn.example.com/master.m3u8',
+        'isStream': true,
+        'headers': {'host': 'attacker.example'},
+      });
+
+      expect(response.statusCode, HttpStatus.badRequest);
+      expect(addedUrls, isEmpty);
+    });
+
     test('rejects missing or incorrect tokens without adding a URL', () async {
       final missing = await post('/downloads', {
         'type': 'add_download',

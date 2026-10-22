@@ -53,6 +53,10 @@ Future<Map<String, Object?>> _handleMessage(
   if (url == null) {
     return {'ok': false, 'error': 'Only HTTP and HTTPS URLs are supported.'};
   }
+  final headers = _validatedHeaders(message['headers']);
+  if (headers == null) {
+    return {'ok': false, 'error': 'Invalid media request headers.'};
+  }
 
   final tokenFile = File(_tokenFilePath());
   if (!await tokenFile.exists()) {
@@ -75,7 +79,15 @@ Future<Map<String, Object?>> _handleMessage(
     request.headers
       ..set(HttpHeaders.authorizationHeader, 'Bearer $token')
       ..contentType = ContentType.json;
-    request.write(jsonEncode({'type': 'add_download', 'url': url}));
+    request.write(
+      jsonEncode({
+        'type': 'add_download',
+        'url': url,
+        'isStream': message['isStream'] == true,
+        'fileName': message['fileName'],
+        'headers': headers,
+      }),
+    );
     final response = await request.close().timeout(const Duration(seconds: 3));
     final decoded = jsonDecode(await utf8.decoder.bind(response).join());
     if (response.statusCode == HttpStatus.ok &&
@@ -101,6 +113,32 @@ Future<Map<String, Object?>> _handleMessage(
   } finally {
     client.close(force: true);
   }
+}
+
+Map<String, String>? _validatedHeaders(Object? value) {
+  if (value == null) return const {};
+  if (value is! Map) return null;
+  const allowedHeaders = {
+    'accept',
+    'cookie',
+    'origin',
+    'referer',
+    'user-agent',
+  };
+  final headers = <String, String>{};
+  for (final entry in value.entries) {
+    if (entry.key is! String || entry.value is! String) return null;
+    final name = (entry.key as String).toLowerCase();
+    final content = entry.value as String;
+    if (!allowedHeaders.contains(name) ||
+        content.contains('\r') ||
+        content.contains('\n') ||
+        content.length > 8192) {
+      return null;
+    }
+    headers[name] = content;
+  }
+  return Map.unmodifiable(headers);
 }
 
 String _tokenFilePath() {

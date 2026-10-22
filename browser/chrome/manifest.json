@@ -3,7 +3,8 @@
   "name": "Internet Download Manager: Download with IDM",
   "description": "Send links and media to Internet Download Manager for macOS and Windows.",
   "version": "1.0.0",
-  "permissions": ["contextMenus", "nativeMessaging"],
+  "permissions": ["contextMenus", "nativeMessaging", "storage", "webRequest"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "service_worker.js"
   },

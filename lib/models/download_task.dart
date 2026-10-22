@@ -22,6 +22,8 @@ class DownloadTask {
     this.receivedBytes = 0,
     this.speedBytesPerSecond = 0,
     this.errorMessage,
+    this.isStream = false,
+    this.requestHeaders = const {},
   });
 
   final String id;
@@ -34,6 +36,8 @@ class DownloadTask {
   final int receivedBytes;
   final double speedBytesPerSecond;
   final String? errorMessage;
+  final bool isStream;
+  final Map<String, String> requestHeaders;
 
   DownloadTask copyWith({
     String? fileName,
@@ -44,6 +48,7 @@ class DownloadTask {
     String? errorMessage,
     bool clearError = false,
     bool clearProgress = false,
+    Map<String, String>? requestHeaders,
   }) {
     return DownloadTask(
       id: id,
@@ -58,10 +63,18 @@ class DownloadTask {
           ? 0
           : speedBytesPerSecond ?? this.speedBytesPerSecond,
       errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
+      isStream: isStream,
+      requestHeaders: requestHeaders ?? this.requestHeaders,
     );
   }
 
-  factory DownloadTask.fromUrl(String url, String destinationDirectory) {
+  factory DownloadTask.fromUrl(
+    String url,
+    String destinationDirectory, {
+    bool isStream = false,
+    String? suggestedFileName,
+    Map<String, String> requestHeaders = const {},
+  }) {
     final normalizedUrl = url.trim();
     final uri = Uri.tryParse(normalizedUrl);
     if (uri == null ||
@@ -71,8 +84,14 @@ class DownloadTask {
       throw const FormatException('Expected a valid HTTP or HTTPS URL.');
     }
     final pathSegments = uri.pathSegments;
-    final candidate = pathSegments.isEmpty ? '' : pathSegments.last;
-    final name = _safeFileName(candidate.isEmpty ? 'download' : candidate);
+    final candidate =
+        suggestedFileName ?? (pathSegments.isEmpty ? '' : pathSegments.last);
+    var name = _safeFileName(candidate.isEmpty ? 'download' : candidate);
+    if (isStream) {
+      final dot = name.lastIndexOf('.');
+      if (dot > 0) name = name.substring(0, dot);
+      name = '$name.mkv';
+    }
 
     return DownloadTask(
       id: _newTaskId(),
@@ -81,6 +100,8 @@ class DownloadTask {
       destinationDirectory: destinationDirectory,
       status: DownloadStatus.queued,
       createdAt: DateTime.now(),
+      isStream: isStream,
+      requestHeaders: Map.unmodifiable(requestHeaders),
     );
   }
 
@@ -97,6 +118,10 @@ class DownloadTask {
       speedBytesPerSecond:
           (json['speedBytesPerSecond'] as num?)?.toDouble() ?? 0,
       errorMessage: json['errorMessage'] as String?,
+      isStream: json['isStream'] as bool? ?? false,
+      requestHeaders: Map<String, String>.from(
+        json['requestHeaders'] as Map? ?? const {},
+      ),
     );
   }
 
@@ -111,6 +136,7 @@ class DownloadTask {
     'receivedBytes': receivedBytes,
     'speedBytesPerSecond': speedBytesPerSecond,
     'errorMessage': errorMessage,
+    'isStream': isStream,
   };
 
   static String _safeFileName(String value) {

@@ -9,8 +9,14 @@ class AppDelegate: FlutterAppDelegate {
     super.applicationDidFinishLaunching(notification)
 
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-    item.button?.image = NSApp.applicationIconImage
+    let trayImage = NSImage(
+      systemSymbolName: "arrow.down.circle.fill",
+      accessibilityDescription: "Internet Download Manager"
+    ) ?? NSApp.applicationIconImage
+    item.button?.image = trayImage
     item.button?.image?.isTemplate = true
+    item.button?.imagePosition = .imageOnly
+    item.button?.toolTip = "Internet Download Manager"
 
     let menu = NSMenu()
     menu.addItem(
