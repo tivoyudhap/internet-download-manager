@@ -23,6 +23,10 @@ class FlutterWindow : public Win32Window {
                          LPARAM const lparam) noexcept override;
 
  private:
+  void AddTrayIcon();
+  void RemoveTrayIcon();
+  void ShowFromTray();
+
   // The project to run.
   flutter::DartProject project_;
 
