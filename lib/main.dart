@@ -89,12 +89,10 @@ class _DownloadsPageState extends State<DownloadsPage> {
   }
 
   Future<void> _showAddDownloadDialog() async {
-    final controller = TextEditingController();
     final url = await showDialog<String>(
       context: context,
-      builder: (context) => _AddDownloadDialog(controller: controller),
+      builder: (context) => const _AddDownloadDialog(),
     );
-    controller.dispose();
     if (!mounted || url == null) return;
     try {
       await _queue.addUrl(url);
@@ -1049,19 +1047,18 @@ const _tableLabel = TextStyle(
 );
 
 class _AddDownloadDialog extends StatefulWidget {
-  const _AddDownloadDialog({required this.controller});
-
-  final TextEditingController controller;
+  const _AddDownloadDialog();
 
   @override
   State<_AddDownloadDialog> createState() => _AddDownloadDialogState();
 }
 
 class _AddDownloadDialogState extends State<_AddDownloadDialog> {
+  final _controller = TextEditingController();
   String? _errorText;
 
   void _submit() {
-    final text = widget.controller.text.trim();
+    final text = _controller.text.trim();
     final uri = Uri.tryParse(text);
     if (uri == null ||
         !uri.hasAuthority ||
@@ -1071,6 +1068,12 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
       return;
     }
     Navigator.of(context).pop(uri.toString());
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   @override
@@ -1100,7 +1103,7 @@ class _AddDownloadDialogState extends State<_AddDownloadDialog> {
               ),
               const SizedBox(height: 21),
               TextField(
-                controller: widget.controller,
+                controller: _controller,
                 autofocus: true,
                 keyboardType: TextInputType.url,
                 onChanged: (_) {
