@@ -45,8 +45,6 @@ class DownloadControl {
     _isPaused = false;
     _resumeCompleter?.complete();
     _resumeCompleter = null;
-    _cancelHandler?.call();
-    _cancelHandler = null;
   }
 
   void cancel() {
@@ -56,6 +54,8 @@ class DownloadControl {
     _isPaused = false;
     _resumeCompleter?.complete();
     _resumeCompleter = null;
+    _cancelHandler?.call();
+    _cancelHandler = null;
   }
 
   Future<void> waitUntilResumed() async {
@@ -103,6 +103,8 @@ class HttpDownloadEngine implements DownloadEngine {
       task.fileName,
     );
     final partialFile = File('${destination.path}.${task.id}.part');
+    var existingBytes = 0;
+    if (await partialFile.exists()) existingBytes = await partialFile.length();
     final client = _clientFactory()
       ..connectionTimeout = const Duration(seconds: 30)
       ..userAgent = 'InternetDownloadManager/1.0';
@@ -112,30 +114,74 @@ class HttpDownloadEngine implements DownloadEngine {
 
     try {
       final request = await _withCancellation(client.getUrl(uri), control);
+      if (existingBytes > 0) {
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=$existingBytes-');
+      }
       control?.registerCancelHandler(() => request.abort());
       final response = await _withCancellation(request.close(), control);
+
+      if (response.statusCode == HttpStatus.requestedRangeNotSatisfiable &&
+          existingBytes > 0) {
+        final completeLength = _unsatisfiedRangeLength(response);
+        await response.drain<void>();
+        if (completeLength == existingBytes) {
+          await partialFile.rename(destination.path);
+          onProgress(
+            receivedBytes: existingBytes,
+            totalBytes: existingBytes,
+            bytesPerSecond: 0,
+          );
+          return DownloadResult(
+            fileName: destination.path.split(Platform.pathSeparator).last,
+            totalBytes: existingBytes,
+          );
+        }
+      }
+
+      final isPartialResponse =
+          response.statusCode == HttpStatus.partialContent;
       if (response.statusCode < 200 || response.statusCode >= 300) {
         await response.drain<void>();
         throw DownloadException('Server returned HTTP ${response.statusCode}.');
       }
-
-      final totalBytes = response.contentLength >= 0
+      final contentRange = isPartialResponse
+          ? _parseContentRange(
+              response.headers.value(HttpHeaders.contentRangeHeader),
+            )
+          : null;
+      final responseLength = response.contentLength >= 0
           ? response.contentLength
           : null;
-      sink = partialFile.openWrite(mode: FileMode.writeOnly);
+      if (isPartialResponse &&
+          (contentRange == null ||
+              contentRange.start != existingBytes ||
+              (responseLength != null &&
+                  contentRange.end - contentRange.start + 1 !=
+                      responseLength))) {
+        await response.drain<void>();
+        throw const DownloadException('Server returned an invalid byte range.');
+      }
+      final startOffset = isPartialResponse ? existingBytes : 0;
+      final totalBytes =
+          contentRange?.total ??
+          (responseLength == null ? null : startOffset + responseLength);
+      sink = partialFile.openWrite(
+        mode: isPartialResponse ? FileMode.append : FileMode.writeOnly,
+      );
       responseIterator = StreamIterator<List<int>>(response);
       control?.registerCancelHandler(
         () => unawaited(responseIterator?.cancel()),
       );
       final stopwatch = Stopwatch()..start();
-      var receivedBytes = 0;
+      var receivedResponseBytes = 0;
       var lastReportedAt = Duration.zero;
 
       while (await _withCancellation(responseIterator.moveNext(), control)) {
         await control?.waitUntilResumed();
         final chunk = responseIterator.current;
         sink.add(chunk);
-        receivedBytes += chunk.length;
+        receivedResponseBytes += chunk.length;
+        final receivedBytes = startOffset + receivedResponseBytes;
         final elapsed = stopwatch.elapsed;
         if (elapsed - lastReportedAt >= const Duration(milliseconds: 200)) {
           onProgress(
@@ -151,17 +197,23 @@ class HttpDownloadEngine implements DownloadEngine {
 
       await control?.waitUntilResumed();
 
-      if (totalBytes != null && receivedBytes != totalBytes) {
+      if (responseLength != null && receivedResponseBytes != responseLength) {
         throw DownloadException(
-          'Download ended early ($receivedBytes of $totalBytes bytes received).',
+          'Download ended early ($receivedResponseBytes of $responseLength bytes received).',
         );
       }
       await sink.flush();
       await sink.close();
       sink = null;
+      final receivedBytes = startOffset + receivedResponseBytes;
+      if (totalBytes != null && receivedBytes != totalBytes) {
+        throw DownloadException(
+          'Download ended early ($receivedBytes of $totalBytes bytes received).',
+        );
+      }
       await partialFile.rename(destination.path);
       stopwatch.stop();
-      final finalSize = totalBytes ?? receivedBytes;
+      final finalSize = receivedBytes;
       onProgress(
         receivedBytes: finalSize,
         totalBytes: totalBytes ?? finalSize,
@@ -219,6 +271,24 @@ class HttpDownloadEngine implements DownloadEngine {
   String _join(String directory, String fileName) =>
       '$directory${Platform.pathSeparator}$fileName';
 
+  _ContentRange? _parseContentRange(String? value) {
+    final match = RegExp(r'^bytes (\d+)-(\d+)/(\d+|\*)$')
+        .firstMatch(value ?? '');
+    if (match == null) return null;
+    return _ContentRange(
+      start: int.parse(match.group(1)!),
+      end: int.parse(match.group(2)!),
+      total: int.tryParse(match.group(3)!),
+    );
+  }
+
+  int? _unsatisfiedRangeLength(HttpClientResponse response) {
+    final match = RegExp(
+      r'^bytes \*/(\d+)$',
+    ).firstMatch(response.headers.value(HttpHeaders.contentRangeHeader) ?? '');
+    return match == null ? null : int.tryParse(match.group(1)!);
+  }
+
   Future<T> _withCancellation<T>(Future<T> future, DownloadControl? control) {
     if (control == null) return future;
     if (control.isCanceled) {
@@ -229,6 +299,14 @@ class HttpDownloadEngine implements DownloadEngine {
     );
     return Future.any<T>([future, canceled]);
   }
+}
+
+class _ContentRange {
+  const _ContentRange({required this.start, required this.end, this.total});
+
+  final int start;
+  final int end;
+  final int? total;
 }
 
 class DownloadException implements Exception {

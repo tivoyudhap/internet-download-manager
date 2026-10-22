@@ -199,6 +199,96 @@ void main() {
     );
   });
 
+  test(
+    'resumes an existing partial file using an HTTP range request',
+    () async {
+      final download = task('resume.bin');
+      final partial = File(
+        '${temporaryDirectory.path}/resume.bin.${download.id}.part',
+      );
+      await partial.writeAsBytes([1, 2]);
+      server.listen((request) async {
+        expect(request.headers.value(HttpHeaders.rangeHeader), 'bytes=2-');
+        request.response.statusCode = HttpStatus.partialContent;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes 2-5/6',
+        );
+        request.response.contentLength = 4;
+        request.response.add([3, 4, 5, 6]);
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        download,
+        onProgress: _ignoreProgress,
+      );
+
+      expect(result.totalBytes, 6);
+      expect(
+        await File('${temporaryDirectory.path}/resume.bin').readAsBytes(),
+        [1, 2, 3, 4, 5, 6],
+      );
+      expect(await partial.exists(), isFalse);
+    },
+  );
+
+  test(
+    'restarts from zero when the server ignores the range request',
+    () async {
+      final download = task('restart.bin');
+      await File('${temporaryDirectory.path}/restart.bin.${download.id}.part')
+          .writeAsBytes([1, 2, 3]);
+      server.listen((request) async {
+        expect(request.headers.value(HttpHeaders.rangeHeader), 'bytes=3-');
+        request.response.add([9, 8]);
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        download,
+        onProgress: _ignoreProgress,
+      );
+
+      expect(result.totalBytes, 2);
+      expect(
+        await File('${temporaryDirectory.path}/restart.bin').readAsBytes(),
+        [9, 8],
+      );
+    },
+  );
+
+  test(
+    'finalizes a partial file when the server reports it is already complete',
+    () async {
+      final download = task('already-complete.bin');
+      final partial = File(
+        '${temporaryDirectory.path}/already-complete.bin.${download.id}.part',
+      );
+      await partial.writeAsBytes([1, 2, 3]);
+      server.listen((request) async {
+        request.response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+        request.response.headers.set(
+          HttpHeaders.contentRangeHeader,
+          'bytes */3',
+        );
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        download,
+        onProgress: _ignoreProgress,
+      );
+
+      expect(result.totalBytes, 3);
+      expect(
+        await File('${temporaryDirectory.path}/already-complete.bin')
+            .readAsBytes(),
+        [1, 2, 3],
+      );
+    },
+  );
+
   test('maps connection failures into a readable download error', () async {
     final unavailablePort = server.port;
     final host = server.address.address;

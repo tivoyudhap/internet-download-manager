@@ -33,7 +33,26 @@ class DownloadQueueController extends ChangeNotifier {
     _loadError = null;
     notifyListeners();
     try {
-      _tasks = await _store.load();
+      final loadedTasks = await _store.load();
+      _tasks = loadedTasks
+          .map(
+            (task) => task.status == DownloadStatus.downloading
+                ? task.copyWith(
+                    status: DownloadStatus.paused,
+                    speedBytesPerSecond: 0,
+                  )
+                : task,
+          )
+          .toList();
+      if (_tasks.indexed.any(
+        (entry) => entry.$2.status != loadedTasks[entry.$1].status,
+      )) {
+        try {
+          await _store.save(_tasks);
+        } catch (_) {
+          // Keep the recovered paused state available in memory.
+        }
+      }
     } catch (error) {
       _loadError = error.toString();
     } finally {
@@ -74,7 +93,6 @@ class DownloadQueueController extends ChangeNotifier {
         var task = _tasks[nextIndex];
         task = task.copyWith(
           status: DownloadStatus.downloading,
-          receivedBytes: 0,
           speedBytesPerSecond: 0,
           clearError: true,
         );
@@ -177,11 +195,7 @@ class DownloadQueueController extends ChangeNotifier {
     final control = _activeTaskId == id ? _activeControl : null;
     if (control == null) {
       await _replaceTask(
-        task.copyWith(
-          status: DownloadStatus.queued,
-          clearError: true,
-          clearProgress: true,
-        ),
+        task.copyWith(status: DownloadStatus.queued, clearError: true),
         persist: true,
       );
       await processQueue();

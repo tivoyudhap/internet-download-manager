@@ -118,6 +118,32 @@ void main() {
     expect(controller.tasks.single.id, savedTask.id);
   });
 
+  test('recovers an interrupted download as paused on startup', () async {
+    final interruptedTask = DownloadTask(
+      id: 'interrupted-task',
+      url: 'https://example.com/file.zip',
+      fileName: 'file.zip',
+      destinationDirectory: '/tmp/Downloads',
+      status: DownloadStatus.downloading,
+      createdAt: DateTime.utc(2026),
+      totalBytes: 2048,
+      receivedBytes: 512,
+      speedBytesPerSecond: 128,
+    );
+    await store.save([interruptedTask]);
+    final controller = DownloadQueueController(store);
+    addTearDown(controller.dispose);
+
+    await controller.load();
+
+    expect(controller.tasks.single.status, DownloadStatus.paused);
+    expect(controller.tasks.single.receivedBytes, 512);
+    expect(controller.tasks.single.speedBytesPerSecond, 0);
+    final saved = (await store.load()).single;
+    expect(saved.status, DownloadStatus.paused);
+    expect(saved.receivedBytes, 512);
+  });
+
   test('adding a URL persists it and notifies listeners', () async {
     final controller = DownloadQueueController(store);
     addTearDown(controller.dispose);
@@ -344,7 +370,7 @@ void main() {
     expect(controller.tasks.single.receivedBytes, 1024);
   });
 
-  test('resuming a saved paused task starts a fresh transfer', () async {
+  test('resuming a saved paused task keeps its partial progress', () async {
     final pausedTask = DownloadTask(
       id: 'paused-task',
       url: 'https://example.com/file.zip',
