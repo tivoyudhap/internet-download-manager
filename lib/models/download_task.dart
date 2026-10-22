@@ -1,5 +1,15 @@
 enum DownloadStatus { queued, downloading, paused, completed, failed, canceled }
 
+int _lastGeneratedId = 0;
+
+String _newTaskId() {
+  final current = DateTime.now().microsecondsSinceEpoch;
+  _lastGeneratedId = current > _lastGeneratedId
+      ? current
+      : _lastGeneratedId + 1;
+  return _lastGeneratedId.toString();
+}
+
 class DownloadTask {
   const DownloadTask({
     required this.id,
@@ -24,13 +34,20 @@ class DownloadTask {
   final String? errorMessage;
 
   factory DownloadTask.fromUrl(String url, String destinationDirectory) {
-    final uri = Uri.parse(url);
+    final normalizedUrl = url.trim();
+    final uri = Uri.tryParse(normalizedUrl);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        uri.host.isEmpty ||
+        (uri.scheme != 'http' && uri.scheme != 'https')) {
+      throw const FormatException('Expected a valid HTTP or HTTPS URL.');
+    }
     final pathSegments = uri.pathSegments;
     final candidate = pathSegments.isEmpty ? '' : pathSegments.last;
     final name = _safeFileName(candidate.isEmpty ? 'download' : candidate);
 
     return DownloadTask(
-      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      id: _newTaskId(),
       url: uri.toString(),
       fileName: name,
       destinationDirectory: destinationDirectory,

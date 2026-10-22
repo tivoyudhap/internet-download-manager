@@ -4,6 +4,11 @@ import 'dart:io';
 import '../models/download_task.dart';
 
 class DownloadQueueStore {
+  DownloadQueueStore({this.supportDirectory, this.homeDirectory});
+
+  final Directory? supportDirectory;
+  final Directory? homeDirectory;
+
   Future<List<DownloadTask>> load() async {
     final file = await _queueFile();
     if (!await file.exists()) return [];
@@ -25,21 +30,25 @@ class DownloadQueueStore {
   }
 
   Future<String> defaultDownloadDirectory() async {
-    final home = _homeDirectory();
+    final home = (homeDirectory ?? Directory(_homeDirectory())).path;
     return _join(home, 'Downloads');
   }
 
   Future<File> _queueFile() async {
-    final appSupportDirectory = Platform.isWindows
-        ? (Platform.environment['APPDATA'] ??
-              _join(_homeDirectory(), 'AppData', 'Roaming'))
-        : _join(_homeDirectory(), 'Library', 'Application Support');
+    final appSupportPath = supportDirectory?.path;
+    final appSupportDirectory =
+        appSupportPath ??
+        (Platform.isWindows
+            ? (Platform.environment['APPDATA'] ??
+                  _join(_homeDirectory(), 'AppData', 'Roaming'))
+            : _join(_homeDirectory(), 'Library', 'Application Support'));
     return File(
       _join(appSupportDirectory, 'InternetDownloadManager', 'downloads.json'),
     );
   }
 
   String _homeDirectory() {
+    if (homeDirectory != null) return homeDirectory!.path;
     if (Platform.isWindows) {
       return Platform.environment['USERPROFILE'] ?? Directory.current.path;
     }

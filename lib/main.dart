@@ -12,7 +12,9 @@ const _canvas = Color(0xFFF4F7FB);
 void main() => runApp(const DownloadManagerApp());
 
 class DownloadManagerApp extends StatelessWidget {
-  const DownloadManagerApp({super.key});
+  const DownloadManagerApp({super.key, this.queueController});
+
+  final DownloadQueueController? queueController;
 
   @override
   Widget build(BuildContext context) {
@@ -25,7 +27,7 @@ class DownloadManagerApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: _blue),
         fontFamily: 'Arial',
       ),
-      home: const DownloadsPage(),
+      home: DownloadsPage(queueController: queueController),
     );
   }
 }
@@ -39,14 +41,16 @@ class _Category {
 }
 
 class DownloadsPage extends StatefulWidget {
-  const DownloadsPage({super.key});
+  const DownloadsPage({super.key, this.queueController});
+
+  final DownloadQueueController? queueController;
 
   @override
   State<DownloadsPage> createState() => _DownloadsPageState();
 }
 
 class _DownloadsPageState extends State<DownloadsPage> {
-  final _queue = DownloadQueueController(DownloadQueueStore());
+  late final DownloadQueueController _queue;
   final _searchController = TextEditingController();
 
   static const _categories = <_Category>[
@@ -70,6 +74,8 @@ class _DownloadsPageState extends State<DownloadsPage> {
   @override
   void initState() {
     super.initState();
+    _queue =
+        widget.queueController ?? DownloadQueueController(DownloadQueueStore());
     _queue.load();
   }
 
