@@ -86,6 +86,29 @@ void main() {
     },
   );
 
+  test('follows an HTTP redirect to the final file response', () async {
+    server.listen((request) async {
+      if (request.uri.path == '/old.zip') {
+        request.response.statusCode = HttpStatus.found;
+        request.response.headers.set(HttpHeaders.locationHeader, '/new.zip');
+      } else {
+        request.response.write('redirected content');
+      }
+      await request.response.close();
+    });
+
+    final result = await HttpDownloadEngine().download(
+      task('old.zip'),
+      onProgress: _ignoreProgress,
+    );
+
+    expect(result.totalBytes, 'redirected content'.length);
+    expect(
+      await File('${temporaryDirectory.path}/old.zip').readAsString(),
+      'redirected content',
+    );
+  });
+
   test(
     'reports non-success HTTP responses without creating a final file',
     () async {
@@ -192,6 +215,26 @@ void main() {
           (error) => error.message,
           'message',
           startsWith('Network error:'),
+        ),
+      ),
+    );
+  });
+
+  test('reports a destination path that cannot be created', () async {
+    final blockedPath = File('${temporaryDirectory.path}/blocked');
+    await blockedPath.writeAsString('not a directory');
+    final download = DownloadTask.fromUrl(
+      'http://${server.address.address}:${server.port}/blocked.bin',
+      blockedPath.path,
+    );
+
+    await expectLater(
+      HttpDownloadEngine().download(download, onProgress: _ignoreProgress),
+      throwsA(
+        isA<DownloadException>().having(
+          (error) => error.message,
+          'message',
+          startsWith('File error:'),
         ),
       ),
     );

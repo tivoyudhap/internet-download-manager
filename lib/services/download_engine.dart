@@ -93,7 +93,11 @@ class HttpDownloadEngine implements DownloadEngine {
   }) async {
     final uri = Uri.parse(task.url);
     final destinationDirectory = Directory(task.destinationDirectory);
-    await destinationDirectory.create(recursive: true);
+    try {
+      await destinationDirectory.create(recursive: true);
+    } on FileSystemException catch (error) {
+      throw DownloadException('File error: ${error.message}');
+    }
     final destination = await _availableDestination(
       destinationDirectory,
       task.fileName,

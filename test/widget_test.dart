@@ -78,7 +78,51 @@ class _MemoryQueueStore extends DownloadQueueStore {
   Future<String> defaultDownloadDirectory() async => '/test/Downloads';
 }
 
+class _DelayedLoadQueueStore extends _MemoryQueueStore {
+  final loadResult = Completer<List<DownloadTask>>();
+
+  @override
+  Future<List<DownloadTask>> load() => loadResult.future;
+}
+
+class _FailingLoadQueueStore extends _MemoryQueueStore {
+  @override
+  Future<List<DownloadTask>> load() async =>
+      throw const FormatException('Saved queue is not valid JSON.');
+}
+
 void main() {
+  testWidgets('shows loading and empty states during queue restoration', (
+    WidgetTester tester,
+  ) async {
+    final store = _DelayedLoadQueueStore();
+    final controller = DownloadQueueController(store);
+    await tester.pumpWidget(DownloadManagerApp(queueController: controller));
+
+    expect(find.text('Loading your downloads…'), findsOneWidget);
+    expect(find.text('Your download list is empty'), findsNothing);
+
+    store.loadResult.complete([]);
+    await tester.pumpAndSettle();
+    expect(find.text('Your download list is empty'), findsOneWidget);
+    expect(find.text('Add your first download'), findsOneWidget);
+  });
+
+  testWidgets('shows the saved queue load error without an empty-state CTA', (
+    WidgetTester tester,
+  ) async {
+    final controller = DownloadQueueController(_FailingLoadQueueStore());
+    await tester.pumpWidget(DownloadManagerApp(queueController: controller));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Could not load saved downloads'), findsOneWidget);
+    expect(
+      find.text('FormatException: Saved queue is not valid JSON.'),
+      findsOneWidget,
+    );
+    expect(find.text('Add your first download'), findsNothing);
+  });
+
   testWidgets('adds a validated URL to the visible queue', (
     WidgetTester tester,
   ) async {

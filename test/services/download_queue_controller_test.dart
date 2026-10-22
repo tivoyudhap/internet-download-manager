@@ -70,6 +70,20 @@ class _FailOnceDownloadEngine implements DownloadEngine {
   }
 }
 
+class _RecordingDownloadEngine implements DownloadEngine {
+  final downloadedIds = <String>[];
+
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+    DownloadControl? control,
+  }) async {
+    downloadedIds.add(task.id);
+    return DownloadResult(fileName: task.fileName, totalBytes: 42);
+  }
+}
+
 void main() {
   late Directory temporaryDirectory;
   late DownloadQueueStore store;
@@ -230,6 +244,40 @@ void main() {
     expect(controller.tasks.single.status, DownloadStatus.failed);
     expect(controller.tasks.single.errorMessage, 'Server returned HTTP 404.');
     expect((await store.load()).single.status, DownloadStatus.failed);
+  });
+
+  test('processes queued downloads one at a time in queue order', () async {
+    final engine = _RecordingDownloadEngine();
+    final controller = DownloadQueueController(store, engine: engine);
+    addTearDown(controller.dispose);
+    await controller.load();
+    final first = await controller.addUrl('https://example.com/first.zip');
+    final second = await controller.addUrl('https://example.com/second.zip');
+
+    await controller.processQueue();
+
+    expect(engine.downloadedIds, [second.id, first.id]);
+    expect(
+      controller.tasks.map((task) => task.status),
+      everyElement(DownloadStatus.completed),
+    );
+  });
+
+  test('ignores a concurrent request to process an active queue', () async {
+    final engine = _ControlledDownloadEngine();
+    final controller = DownloadQueueController(store, engine: engine);
+    addTearDown(controller.dispose);
+    await controller.load();
+    await controller.addUrl('https://example.com/file.zip');
+
+    final processing = controller.processQueue();
+    await engine.started.future;
+    await controller.processQueue();
+    expect(controller.tasks.single.status, DownloadStatus.downloading);
+
+    engine.finish.complete();
+    await processing;
+    expect(controller.tasks.single.status, DownloadStatus.completed);
   });
 
   test('pauses and resumes an active download', () async {
