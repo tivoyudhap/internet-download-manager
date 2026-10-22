@@ -3,7 +3,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:internet_download_manager/main.dart';
 import 'package:internet_download_manager/models/download_task.dart';
 import 'package:internet_download_manager/services/download_queue_controller.dart';
+import 'package:internet_download_manager/services/download_engine.dart';
 import 'package:internet_download_manager/services/download_queue_store.dart';
+
+class _ImmediateDownloadEngine implements DownloadEngine {
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+  }) async {
+    onProgress(receivedBytes: 1024, totalBytes: 1024, bytesPerSecond: 512);
+    return DownloadResult(fileName: task.fileName, totalBytes: 1024);
+  }
+}
 
 class _MemoryQueueStore extends DownloadQueueStore {
   List<DownloadTask> savedTasks = [];
@@ -25,7 +37,10 @@ void main() {
     WidgetTester tester,
   ) async {
     final store = _MemoryQueueStore();
-    final controller = DownloadQueueController(store);
+    final controller = DownloadQueueController(
+      store,
+      engine: _ImmediateDownloadEngine(),
+    );
     await tester.pumpWidget(DownloadManagerApp(queueController: controller));
     await tester.pumpAndSettle();
 
@@ -41,7 +56,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('installer.zip'), findsOneWidget);
-    expect(find.text('Queued'), findsOneWidget);
+    expect(find.text('Completed'), findsNWidgets(2));
     expect(store.savedTasks, hasLength(1));
     expect(
       store.savedTasks.single.url,

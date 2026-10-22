@@ -2,8 +2,25 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:internet_download_manager/models/download_task.dart';
+import 'package:internet_download_manager/services/download_engine.dart';
 import 'package:internet_download_manager/services/download_queue_controller.dart';
 import 'package:internet_download_manager/services/download_queue_store.dart';
+
+class _TestDownloadEngine implements DownloadEngine {
+  _TestDownloadEngine({this.failure});
+
+  final String? failure;
+
+  @override
+  Future<DownloadResult> download(
+    DownloadTask task, {
+    required DownloadProgressCallback onProgress,
+  }) async {
+    onProgress(receivedBytes: 512, totalBytes: 1024, bytesPerSecond: 256);
+    if (failure != null) throw DownloadException(failure!);
+    return DownloadResult(fileName: task.fileName, totalBytes: 1024);
+  }
+}
 
 class _FailingSaveStore extends DownloadQueueStore {
   @override
@@ -136,5 +153,47 @@ void main() {
 
     expect(controller.tasks, isEmpty);
     expect(await queueFile.readAsString(), corruptContents);
+  });
+
+  test('processes a queued task and persists transfer progress', () async {
+    final controller = DownloadQueueController(
+      store,
+      engine: _TestDownloadEngine(),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    final task = await controller.addUrl('https://example.com/file.zip');
+    final receivedByteUpdates = <int>[];
+    controller.addListener(() {
+      final updatedTask = controller.tasks.firstWhere(
+        (item) => item.id == task.id,
+      );
+      receivedByteUpdates.add(updatedTask.receivedBytes);
+    });
+
+    await controller.processQueue();
+
+    final completed = controller.tasks.single;
+    expect(receivedByteUpdates, contains(512));
+    expect(completed.status, DownloadStatus.completed);
+    expect(completed.receivedBytes, 1024);
+    expect(completed.totalBytes, 1024);
+    expect((await store.load()).single.status, DownloadStatus.completed);
+  });
+
+  test('marks an HTTP failure and stores its message', () async {
+    final controller = DownloadQueueController(
+      store,
+      engine: _TestDownloadEngine(failure: 'Server returned HTTP 404.'),
+    );
+    addTearDown(controller.dispose);
+    await controller.load();
+    await controller.addUrl('https://example.com/missing.zip');
+
+    await controller.processQueue();
+
+    expect(controller.tasks.single.status, DownloadStatus.failed);
+    expect(controller.tasks.single.errorMessage, 'Server returned HTTP 404.');
+    expect((await store.load()).single.status, DownloadStatus.failed);
   });
 }

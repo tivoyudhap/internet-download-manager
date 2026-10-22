@@ -20,6 +20,7 @@ class DownloadTask {
     required this.createdAt,
     this.totalBytes,
     this.receivedBytes = 0,
+    this.speedBytesPerSecond = 0,
     this.errorMessage,
   });
 
@@ -31,7 +32,31 @@ class DownloadTask {
   final DateTime createdAt;
   final int? totalBytes;
   final int receivedBytes;
+  final double speedBytesPerSecond;
   final String? errorMessage;
+
+  DownloadTask copyWith({
+    String? fileName,
+    DownloadStatus? status,
+    int? totalBytes,
+    int? receivedBytes,
+    double? speedBytesPerSecond,
+    String? errorMessage,
+    bool clearError = false,
+  }) {
+    return DownloadTask(
+      id: id,
+      url: url,
+      fileName: fileName ?? this.fileName,
+      destinationDirectory: destinationDirectory,
+      status: status ?? this.status,
+      createdAt: createdAt,
+      totalBytes: totalBytes ?? this.totalBytes,
+      receivedBytes: receivedBytes ?? this.receivedBytes,
+      speedBytesPerSecond: speedBytesPerSecond ?? this.speedBytesPerSecond,
+      errorMessage: clearError ? null : errorMessage ?? this.errorMessage,
+    );
+  }
 
   factory DownloadTask.fromUrl(String url, String destinationDirectory) {
     final normalizedUrl = url.trim();
@@ -66,6 +91,8 @@ class DownloadTask {
       createdAt: DateTime.parse(json['createdAt'] as String),
       totalBytes: json['totalBytes'] as int?,
       receivedBytes: json['receivedBytes'] as int? ?? 0,
+      speedBytesPerSecond:
+          (json['speedBytesPerSecond'] as num?)?.toDouble() ?? 0,
       errorMessage: json['errorMessage'] as String?,
     );
   }
@@ -79,6 +106,7 @@ class DownloadTask {
     'createdAt': createdAt.toIso8601String(),
     'totalBytes': totalBytes,
     'receivedBytes': receivedBytes,
+    'speedBytesPerSecond': speedBytesPerSecond,
     'errorMessage': errorMessage,
   };
 

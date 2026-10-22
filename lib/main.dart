@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'models/download_task.dart';
@@ -96,6 +98,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
     if (!mounted || url == null) return;
     try {
       await _queue.addUrl(url);
+      unawaited(_queue.processQueue());
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -106,9 +109,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
-        content: Text(
-          'Added to queue. The download engine is not connected yet.',
-        ),
+        content: Text('Added to queue. Download started.'),
         behavior: SnackBarBehavior.floating,
       ),
     );
@@ -819,6 +820,7 @@ class _DownloadRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final date = task.createdAt.toLocal();
+    final (badgeBackground, badgeForeground) = _statusColors(task.status);
     final dateLabel =
         '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
     return Column(
@@ -866,6 +868,45 @@ class _DownloadRow extends StatelessWidget {
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(color: _muted, fontSize: 10),
                           ),
+                          if (task.status == DownloadStatus.downloading) ...[
+                            const SizedBox(height: 8),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: LinearProgressIndicator(
+                                minHeight: 4,
+                                value:
+                                    task.totalBytes == null ||
+                                        task.totalBytes == 0
+                                    ? null
+                                    : (task.receivedBytes / task.totalBytes!)
+                                          .clamp(0, 1)
+                                          .toDouble(),
+                                color: _blue,
+                                backgroundColor: const Color(0xFFE7EEF5),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${_formatBytes(task.speedBytesPerSecond.round())}/s${_eta(task)}',
+                              style: const TextStyle(
+                                color: _muted,
+                                fontSize: 9,
+                              ),
+                            ),
+                          ],
+                          if (task.status == DownloadStatus.failed &&
+                              task.errorMessage != null) ...[
+                            const SizedBox(height: 3),
+                            Text(
+                              task.errorMessage!,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                color: Color(0xFFBE4141),
+                                fontSize: 10,
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
@@ -875,9 +916,11 @@ class _DownloadRow extends StatelessWidget {
               Expanded(
                 flex: 2,
                 child: Text(
-                  task.totalBytes == null
-                      ? '—'
-                      : _formatBytes(task.totalBytes!),
+                  task.totalBytes != null
+                      ? '${_formatBytes(task.receivedBytes)} / ${_formatBytes(task.totalBytes!)}'
+                      : task.receivedBytes > 0
+                      ? _formatBytes(task.receivedBytes)
+                      : '—',
                   textAlign: TextAlign.right,
                   style: const TextStyle(
                     color: Color(0xFF66758A),
@@ -895,13 +938,13 @@ class _DownloadRow extends StatelessWidget {
                       vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFFFF5E7),
+                      color: badgeBackground,
                       borderRadius: BorderRadius.circular(20),
                     ),
                     child: Text(
                       _statusLabel(task.status),
-                      style: const TextStyle(
-                        color: Color(0xFFB97813),
+                      style: TextStyle(
+                        color: badgeForeground,
                         fontSize: 10,
                         fontWeight: FontWeight.w700,
                       ),
@@ -931,6 +974,33 @@ class _DownloadRow extends StatelessWidget {
     DownloadStatus.failed => 'Failed',
     DownloadStatus.canceled => 'Canceled',
   };
+
+  (Color, Color) _statusColors(DownloadStatus status) => switch (status) {
+    DownloadStatus.queued => (const Color(0xFFF0F3F7), const Color(0xFF64748B)),
+    DownloadStatus.downloading => (const Color(0xFFEAF4FC), _blue),
+    DownloadStatus.paused => (const Color(0xFFFFF5E7), const Color(0xFFB97813)),
+    DownloadStatus.completed => (
+      const Color(0xFFEAF7F1),
+      const Color(0xFF27845F),
+    ),
+    DownloadStatus.failed => (const Color(0xFFFDECEC), const Color(0xFFBE4141)),
+    DownloadStatus.canceled => (
+      const Color(0xFFF0F3F7),
+      const Color(0xFF64748B),
+    ),
+  };
+
+  String _eta(DownloadTask task) {
+    if (task.totalBytes == null || task.speedBytesPerSecond <= 0) return '';
+    final remainingBytes = (task.totalBytes! - task.receivedBytes).clamp(
+      0,
+      task.totalBytes!,
+    );
+    final seconds = (remainingBytes / task.speedBytesPerSecond).ceil();
+    if (seconds < 60) return ' · $seconds sec left';
+    if (seconds < 3600) return ' · ${seconds ~/ 60} min left';
+    return ' · ${seconds ~/ 3600} hr left';
+  }
 
   String _formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';

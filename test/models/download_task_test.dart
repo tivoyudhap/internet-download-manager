@@ -63,6 +63,7 @@ void main() {
         createdAt: DateTime.utc(2026, 10, 22, 10),
         totalBytes: 1024,
         receivedBytes: 512,
+        speedBytesPerSecond: 128.5,
         errorMessage: 'Connection interrupted',
       );
 
@@ -76,6 +77,7 @@ void main() {
       expect(restored.createdAt, task.createdAt);
       expect(restored.totalBytes, task.totalBytes);
       expect(restored.receivedBytes, task.receivedBytes);
+      expect(restored.speedBytesPerSecond, task.speedBytesPerSecond);
       expect(restored.errorMessage, task.errorMessage);
     });
   });
