@@ -39,6 +39,7 @@ Source: "{#BuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs c
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\internet_download_manager.exe"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\internet_download_manager.exe"; Tasks: desktopicon
+Name: "{autoprograms}\Register IDM Chrome host"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\register_chrome_host_windows.ps1"""; WorkingDir: "{app}"
 
 [Run]
 Filename: "{app}\internet_download_manager.exe"; Description: "Launch {#AppName}"; Flags: postinstall nowait skipifsilent

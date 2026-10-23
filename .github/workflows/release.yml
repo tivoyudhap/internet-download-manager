@@ -32,6 +32,17 @@ jobs:
             --build-name="$VERSION" \
             --build-number="$GITHUB_RUN_NUMBER"
 
+      - name: Compile and bundle macOS native host
+        run: |
+          set -euo pipefail
+          APP_PATH="build/macos/Build/Products/Release/Internet Download Manager.app"
+          RESOURCE_PATH="$APP_PATH/Contents/Resources"
+          dart compile exe browser/native_host/bin/idm_native_host.dart \
+            -o build/idm_native_host
+          cp build/idm_native_host "$RESOURCE_PATH/idm_native_host"
+          cp browser/setup_chrome_host_macos.sh "$RESOURCE_PATH/setup_chrome_host_macos.sh"
+          chmod +x "$RESOURCE_PATH/idm_native_host" "$RESOURCE_PATH/setup_chrome_host_macos.sh"
+
       - name: Package DMG
         env:
           RELEASE_VERSION: ${{ github.ref_name }}
@@ -44,6 +55,8 @@ jobs:
           test -d "$APP_PATH"
           mkdir -p "$STAGING" "$OUTPUT"
           cp -R "$APP_PATH" "$STAGING/Internet Download Manager.app"
+          cp browser/register_chrome_host_macos.command "$STAGING/Register Chrome Host.command"
+          chmod +x "$STAGING/Register Chrome Host.command"
           ln -s /Applications "$STAGING/Applications"
           hdiutil create \
             -volname "Internet Download Manager $VERSION" \
@@ -83,6 +96,15 @@ jobs:
           flutter build windows --release `
             --build-name=$version `
             --build-number=$env:GITHUB_RUN_NUMBER
+
+      - name: Compile and bundle Windows native host
+        shell: pwsh
+        run: |
+          $releaseDir = Join-Path $env:GITHUB_WORKSPACE 'build/windows/x64/runner/Release'
+          dart compile exe browser/native_host/bin/idm_native_host.dart `
+            -o (Join-Path $releaseDir 'idm_native_host.exe')
+          Copy-Item browser/setup_chrome_host_windows.ps1 $releaseDir
+          Copy-Item browser/register_chrome_host_windows.ps1 $releaseDir
 
       - name: Package installer
         shell: pwsh

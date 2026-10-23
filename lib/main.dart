@@ -134,8 +134,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
           content: const Text(
             'To send browser downloads to IDM, install the IDM extension in '
             'Chrome and make sure it is enabled at chrome://extensions. The '
-            'extension is installed separately from this app. Keep IDM open '
-            'while using it.',
+            'extension is installed separately from this app. Then run the '
+            'Register Chrome Host helper from the installer and enter the '
+            'extension ID shown there. Keep IDM open while using it.',
           ),
           actions: [
             FilledButton(

@@ -22,8 +22,13 @@ On Windows, use `flutter run -d windows`. Build release versions with `flutter b
 The app version is defined in `pubspec.yaml`. Pushing a version tag such as
 `v1.0.0` starts the GitHub Actions release workflow. It builds a macOS `.dmg`
 and a Windows setup `.exe`, then attaches both files to a GitHub Release for
-that tag. The Windows `.exe` is an installer that includes the complete Flutter
-app bundle and installs it for the current user.
+that tag. Both packages include the native messaging host. The Windows `.exe`
+installs it with the complete Flutter app bundle for the current user. The
+macOS DMG includes a **Register Chrome Host** helper; Windows adds a matching
+Start Menu shortcut. After installing the Chrome extension separately, run the
+helper and enter the extension ID shown at `chrome://extensions`, then restart
+Chrome. Chrome requires the native host registration to allow that specific
+extension ID.
 
 The first-party release packages are unsigned. macOS Gatekeeper or Windows
 SmartScreen may show an unidentified developer warning; code signing and
