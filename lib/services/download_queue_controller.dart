@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
@@ -275,6 +276,54 @@ class DownloadQueueController extends ChangeNotifier {
       notifyListeners();
     });
   }
+
+  Future<void> removeHistoryItem(String id) async {
+    await load();
+    if (_loadError != null) {
+      throw StateError(
+        'Cannot clear history because the saved queue failed to load.',
+      );
+    }
+    await _serialize(() async {
+      final task = _taskById(id);
+      if (task == null || !_isHistoryTask(task)) return;
+      final updatedTasks = _tasks.where((item) => item.id != id).toList();
+      await _store.save(updatedTasks);
+      _tasks = updatedTasks;
+      notifyListeners();
+    });
+  }
+
+  Future<void> deleteDownloadedFile(String id) async {
+    await load();
+    if (_loadError != null) {
+      throw StateError(
+        'Cannot delete a file because the saved queue failed to load.',
+      );
+    }
+    await _serialize(() async {
+      final task = _taskById(id);
+      if (task == null || task.status != DownloadStatus.completed) {
+        throw StateError('Only completed downloads can be deleted.');
+      }
+      final file = File(
+        '${task.destinationDirectory}${Platform.pathSeparator}${task.fileName}',
+      );
+      if (!await file.exists()) {
+        throw FileSystemException('Downloaded file not found', file.path);
+      }
+      await file.delete();
+      final updatedTasks = _tasks.where((item) => item.id != id).toList();
+      await _store.save(updatedTasks);
+      _tasks = updatedTasks;
+      notifyListeners();
+    });
+  }
+
+  bool _isHistoryTask(DownloadTask task) =>
+      task.status == DownloadStatus.completed ||
+      task.status == DownloadStatus.failed ||
+      task.status == DownloadStatus.canceled;
 
   DownloadTask? _taskById(String id) {
     for (final task in _tasks) {

@@ -224,6 +224,96 @@ void main() {
     },
   );
 
+  test('removing one history entry keeps its downloaded file', () async {
+    final directory = Directory('${temporaryDirectory.path}/Downloads');
+    await directory.create(recursive: true);
+    final downloadedFile = File('${directory.path}/finished.zip');
+    await downloadedFile.writeAsBytes([1, 2, 3]);
+    final task = DownloadTask(
+      id: 'finished-file',
+      url: 'https://example.com/finished.zip',
+      fileName: 'finished.zip',
+      destinationDirectory: directory.path,
+      status: DownloadStatus.completed,
+      createdAt: DateTime.utc(2026),
+    );
+    await store.save([task]);
+    final controller = DownloadQueueController(store);
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    await controller.removeHistoryItem(task.id);
+
+    expect(controller.tasks, isEmpty);
+    expect(await store.load(), isEmpty);
+    expect(await downloadedFile.exists(), isTrue);
+  });
+
+  test(
+    'deleting a completed file removes only its own history entry',
+    () async {
+      final directory = Directory('${temporaryDirectory.path}/Downloads');
+      await directory.create(recursive: true);
+      final downloadedFile = File('${directory.path}/finished.zip');
+      await downloadedFile.writeAsBytes([1, 2, 3]);
+      final completedTask = DownloadTask(
+        id: 'finished-file',
+        url: 'https://example.com/finished.zip',
+        fileName: 'finished.zip',
+        destinationDirectory: directory.path,
+        status: DownloadStatus.completed,
+        createdAt: DateTime.utc(2026),
+      );
+      final queuedTask = DownloadTask.fromUrl(
+        'https://example.com/waiting.zip',
+        directory.path,
+      );
+      await store.save([completedTask, queuedTask]);
+      final controller = DownloadQueueController(store);
+      addTearDown(controller.dispose);
+      await controller.load();
+
+      await controller.deleteDownloadedFile(completedTask.id);
+
+      expect(await downloadedFile.exists(), isFalse);
+      expect(controller.tasks.map((task) => task.id), [queuedTask.id]);
+      expect((await store.load()).map((task) => task.id), [queuedTask.id]);
+    },
+  );
+
+  test('does not delete a missing file or a non-completed download', () async {
+    final completedTask = DownloadTask(
+      id: 'missing-file',
+      url: 'https://example.com/missing.zip',
+      fileName: 'missing.zip',
+      destinationDirectory: temporaryDirectory.path,
+      status: DownloadStatus.completed,
+      createdAt: DateTime.utc(2026),
+    );
+    final queuedTask = DownloadTask.fromUrl(
+      'https://example.com/waiting.zip',
+      '/tmp/Downloads',
+    );
+    await store.save([completedTask, queuedTask]);
+    final controller = DownloadQueueController(store);
+    addTearDown(controller.dispose);
+    await controller.load();
+
+    await expectLater(
+      controller.deleteDownloadedFile(completedTask.id),
+      throwsA(isA<FileSystemException>()),
+    );
+    await expectLater(
+      controller.deleteDownloadedFile(queuedTask.id),
+      throwsA(isA<StateError>()),
+    );
+
+    expect(controller.tasks.map((task) => task.id), [
+      completedTask.id,
+      queuedTask.id,
+    ]);
+  });
+
   test('concurrent additions are both retained in storage', () async {
     final controller = DownloadQueueController(store);
     addTearDown(controller.dispose);

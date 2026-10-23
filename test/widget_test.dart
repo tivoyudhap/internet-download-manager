@@ -440,6 +440,74 @@ void main() {
     expect(find.text('Download history cleared.'), findsOneWidget);
   });
 
+  testWidgets('clears history for one completed download from its row menu', (
+    WidgetTester tester,
+  ) async {
+    final completedTask = DownloadTask(
+      id: 'completed-one',
+      url: 'https://example.com/completed.zip',
+      fileName: 'completed.zip',
+      destinationDirectory: '/test/Downloads',
+      status: DownloadStatus.completed,
+      createdAt: DateTime.utc(2026, 10, 22),
+    );
+    final queuedTask = DownloadTask.fromUrl(
+      'https://example.com/waiting.zip',
+      '/test/Downloads',
+    );
+    final store = _MemoryQueueStore()..savedTasks = [completedTask, queuedTask];
+    final controller = DownloadQueueController(store);
+    await tester.pumpWidget(DownloadManagerApp(queueController: controller));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byTooltip('Download actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Download actions').first);
+    await tester.pumpAndSettle();
+    expect(find.text('Clear history'), findsOneWidget);
+    expect(find.text('Delete file'), findsOneWidget);
+    await tester.tap(find.text('Clear history'));
+    await tester.pumpAndSettle();
+
+    expect(store.savedTasks.map((task) => task.id), [queuedTask.id]);
+    expect(find.text('completed.zip'), findsNothing);
+    expect(find.text('waiting.zip'), findsOneWidget);
+    expect(find.text('Removed from download history.'), findsOneWidget);
+  });
+
+  testWidgets('asks before deleting a completed file', (
+    WidgetTester tester,
+  ) async {
+    final completedTask = DownloadTask(
+      id: 'completed-one',
+      url: 'https://example.com/completed.zip',
+      fileName: 'completed.zip',
+      destinationDirectory: '/test/Downloads',
+      status: DownloadStatus.completed,
+      createdAt: DateTime.utc(2026, 10, 22),
+    );
+    final store = _MemoryQueueStore()..savedTasks = [completedTask];
+    final controller = DownloadQueueController(store);
+    await tester.pumpWidget(DownloadManagerApp(queueController: controller));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byTooltip('Download actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Download actions').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Delete file'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Delete downloaded file?'), findsOneWidget);
+    expect(
+      find.textContaining('Permanently delete "completed.zip"'),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('Cancel').last);
+    await tester.pumpAndSettle();
+    expect(store.savedTasks.single.id, completedTask.id);
+  });
+
   testWidgets('rejects HTTP URLs without a host', (WidgetTester tester) async {
     final controller = DownloadQueueController(_MemoryQueueStore());
     await tester.pumpWidget(DownloadManagerApp(queueController: controller));

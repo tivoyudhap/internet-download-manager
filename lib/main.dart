@@ -214,6 +214,64 @@ class _DownloadsPageState extends State<DownloadsPage> {
     }
   }
 
+  Future<void> _clearTaskHistory(DownloadTask task) async {
+    try {
+      await _queue.removeHistoryItem(task.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Removed from download history.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not clear history: $error')),
+      );
+    }
+  }
+
+  Future<void> _confirmDeleteDownloadedFile(DownloadTask task) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete downloaded file?'),
+        content: Text(
+          'Permanently delete "${task.fileName}" from '
+          '${task.destinationDirectory} and remove it from history?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete file'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await _queue.deleteDownloadedFile(task.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('File deleted and removed from history.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Could not delete file: $error')));
+    }
+  }
+
   Future<void> _startBrowserBridge() async {
     try {
       final tokenFile = await _queueStore!.browserBridgeTokenFile();
@@ -384,6 +442,15 @@ class _DownloadsPageState extends State<DownloadsPage> {
                                                 ),
                                                 onRetry: (task) => unawaited(
                                                   _queue.retryDownload(task.id),
+                                                ),
+                                                onClearTaskHistory: (task) =>
+                                                    unawaited(
+                                                      _clearTaskHistory(task),
+                                                    ),
+                                                onDeleteFile: (task) => unawaited(
+                                                  _confirmDeleteDownloadedFile(
+                                                    task,
+                                                  ),
                                                 ),
                                                 showClearHistory:
                                                     _selectedCategory == 0,
@@ -912,6 +979,8 @@ class _DownloadListCard extends StatelessWidget {
     required this.showClearHistory,
     required this.hasHistory,
     required this.onClearHistory,
+    required this.onClearTaskHistory,
+    required this.onDeleteFile,
   });
 
   final String title;
@@ -926,6 +995,8 @@ class _DownloadListCard extends StatelessWidget {
   final bool showClearHistory;
   final bool hasHistory;
   final VoidCallback onClearHistory;
+  final ValueChanged<DownloadTask> onClearTaskHistory;
+  final ValueChanged<DownloadTask> onDeleteFile;
 
   @override
   Widget build(BuildContext context) {
@@ -987,6 +1058,8 @@ class _DownloadListCard extends StatelessWidget {
                 onResume: onResume,
                 onCancel: onCancel,
                 onRetry: onRetry,
+                onClearHistory: onClearTaskHistory,
+                onDeleteFile: onDeleteFile,
               )
           else
             Padding(
@@ -1064,6 +1137,8 @@ class _DownloadRow extends StatelessWidget {
     required this.onResume,
     required this.onCancel,
     required this.onRetry,
+    required this.onClearHistory,
+    required this.onDeleteFile,
   });
 
   final DownloadTask task;
@@ -1071,6 +1146,8 @@ class _DownloadRow extends StatelessWidget {
   final ValueChanged<DownloadTask> onResume;
   final ValueChanged<DownloadTask> onCancel;
   final ValueChanged<DownloadTask> onRetry;
+  final ValueChanged<DownloadTask> onClearHistory;
+  final ValueChanged<DownloadTask> onDeleteFile;
 
   @override
   Widget build(BuildContext context) {
@@ -1209,54 +1286,60 @@ class _DownloadRow extends StatelessWidget {
               ),
               SizedBox(
                 width: 38,
-                child: task.status == DownloadStatus.completed
-                    ? null
-                    : PopupMenuButton<String>(
-                        tooltip: 'Download actions',
-                        onSelected: (action) {
-                          switch (action) {
-                            case 'pause':
-                              onPause(task);
-                            case 'resume':
-                              onResume(task);
-                            case 'cancel':
-                              onCancel(task);
-                            case 'retry':
-                              onRetry(task);
-                          }
-                        },
-                        itemBuilder: (context) => switch (task.status) {
-                          DownloadStatus.queued => const [
-                            PopupMenuItem(
-                              value: 'cancel',
-                              child: Text('Cancel'),
-                            ),
-                          ],
-                          DownloadStatus.downloading => const [
-                            PopupMenuItem(value: 'pause', child: Text('Pause')),
-                            PopupMenuItem(
-                              value: 'cancel',
-                              child: Text('Cancel'),
-                            ),
-                          ],
-                          DownloadStatus.paused => const [
-                            PopupMenuItem(
-                              value: 'resume',
-                              child: Text('Resume'),
-                            ),
-                            PopupMenuItem(
-                              value: 'cancel',
-                              child: Text('Cancel'),
-                            ),
-                          ],
-                          DownloadStatus.failed ||
-                          DownloadStatus.canceled => const [
-                            PopupMenuItem(value: 'retry', child: Text('Retry')),
-                          ],
-                          DownloadStatus.completed => const [],
-                        },
-                        icon: const Icon(Icons.more_vert_rounded, size: 18),
-                      ),
+                child: PopupMenuButton<String>(
+                  tooltip: 'Download actions',
+                  onSelected: (action) {
+                    switch (action) {
+                      case 'pause':
+                        onPause(task);
+                      case 'resume':
+                        onResume(task);
+                      case 'cancel':
+                        onCancel(task);
+                      case 'retry':
+                        onRetry(task);
+                      case 'clearHistory':
+                        onClearHistory(task);
+                      case 'deleteFile':
+                        onDeleteFile(task);
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    ...switch (task.status) {
+                      DownloadStatus.queued => const [
+                        PopupMenuItem(value: 'cancel', child: Text('Cancel')),
+                      ],
+                      DownloadStatus.downloading => const [
+                        PopupMenuItem(value: 'pause', child: Text('Pause')),
+                        PopupMenuItem(value: 'cancel', child: Text('Cancel')),
+                      ],
+                      DownloadStatus.paused => const [
+                        PopupMenuItem(value: 'resume', child: Text('Resume')),
+                        PopupMenuItem(value: 'cancel', child: Text('Cancel')),
+                      ],
+                      DownloadStatus.failed ||
+                      DownloadStatus.canceled => const [
+                        PopupMenuItem(value: 'retry', child: Text('Retry')),
+                      ],
+                      DownloadStatus.completed => const [],
+                    },
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'clearHistory',
+                      enabled:
+                          task.status == DownloadStatus.completed ||
+                          task.status == DownloadStatus.failed ||
+                          task.status == DownloadStatus.canceled,
+                      child: const Text('Clear history'),
+                    ),
+                    PopupMenuItem(
+                      value: 'deleteFile',
+                      enabled: task.status == DownloadStatus.completed,
+                      child: const Text('Delete file'),
+                    ),
+                  ],
+                  icon: const Icon(Icons.more_vert_rounded, size: 18),
+                ),
               ),
             ],
           ),
