@@ -120,7 +120,10 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
     headers.referer = detectedSource.pageUrl;
   }
   if (!rawUrl || rawUrl.startsWith('blob:')) {
-    setStatus('!', 'No video stream found. Start playback, then try again.');
+    setStatus(
+      '!',
+      `IDM ${chrome.runtime.getManifest().version}: no video source found. Reload the extension and page.`,
+    );
     return;
   }
   const url = normalizeDownloadUrl(rawUrl);

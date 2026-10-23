@@ -21,6 +21,7 @@ function loadWorker({
   const chrome = {
     runtime: {
       lastError: null,
+      getManifest: () => ({ version: '1.0.1' }),
       onInstalled: { addListener: (listener) => { listeners.installed = listener; } },
       sendNativeMessage: (host, message, callback) => {
         nativeMessages.push({ host, message });
@@ -296,7 +297,10 @@ test('does not treat a segmented video chunk as a complete page video', async ()
   });
 
   assert.equal(worker.nativeMessages.length, 0);
-  assert.equal(worker.titles.at(-1), 'No video stream found. Start playback, then try again.');
+  assert.equal(
+    worker.titles.at(-1),
+    'IDM 1.0.1: no video source found. Reload the extension and page.',
+  );
 });
 
 test('asks the user to start playback when the page has no captured video', async () => {
@@ -308,7 +312,10 @@ test('asks the user to start playback when the page has no captured video', asyn
   });
 
   assert.equal(worker.nativeMessages.length, 0);
-  assert.equal(worker.titles.at(-1), 'No video stream found. Start playback, then try again.');
+  assert.equal(
+    worker.titles.at(-1),
+    'IDM 1.0.1: no video source found. Reload the extension and page.',
+  );
 });
 
 test('recognizes extensionless manifests by HLS or DASH response MIME type', async () => {
