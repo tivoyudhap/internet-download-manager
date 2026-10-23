@@ -391,6 +391,55 @@ void main() {
     expect(find.text('notes.pdf'), findsNothing);
   });
 
+  testWidgets('clears terminal history from the All downloads options', (
+    WidgetTester tester,
+  ) async {
+    DownloadTask task(String id, DownloadStatus status) => DownloadTask(
+      id: id,
+      url: 'https://example.com/$id.zip',
+      fileName: '$id.zip',
+      destinationDirectory: '/test/Downloads',
+      status: status,
+      createdAt: DateTime.utc(2026, 10, 22),
+    );
+    final store = _MemoryQueueStore()
+      ..savedTasks = [
+        task('done', DownloadStatus.completed),
+        task('broken', DownloadStatus.failed),
+        task('stopped', DownloadStatus.canceled),
+        task('waiting', DownloadStatus.queued),
+      ];
+    final controller = DownloadQueueController(store);
+    await tester.pumpWidget(DownloadManagerApp(queueController: controller));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('More options'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Clear all history'));
+    await tester.pumpAndSettle();
+    expect(find.text('Clear all history?'), findsOneWidget);
+    expect(find.text('done.zip'), findsOneWidget);
+
+    await tester.tap(find.text('Cancel').last);
+    await tester.pumpAndSettle();
+    expect(store.savedTasks, hasLength(4));
+
+    await tester.tap(find.byTooltip('More options'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Clear all history'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Clear history'));
+    await tester.pumpAndSettle();
+
+    expect(store.savedTasks, hasLength(1));
+    expect(store.savedTasks.single.fileName, 'waiting.zip');
+    expect(find.text('done.zip'), findsNothing);
+    expect(find.text('broken.zip'), findsNothing);
+    expect(find.text('stopped.zip'), findsNothing);
+    expect(find.text('waiting.zip'), findsOneWidget);
+    expect(find.text('Download history cleared.'), findsOneWidget);
+  });
+
   testWidgets('rejects HTTP URLs without a host', (WidgetTester tester) async {
     final controller = DownloadQueueController(_MemoryQueueStore());
     await tester.pumpWidget(DownloadManagerApp(queueController: controller));

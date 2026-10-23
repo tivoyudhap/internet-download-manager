@@ -57,6 +57,8 @@ class _Category {
   final DownloadStatus? status;
 }
 
+enum _DownloadListOption { clearHistory }
+
 class DownloadsPage extends StatefulWidget {
   const DownloadsPage({
     super.key,
@@ -158,6 +160,57 @@ class _DownloadsPageState extends State<DownloadsPage> {
       }
     } finally {
       if (mounted) setState(() => _isUpdatingDirectory = false);
+    }
+  }
+
+  Future<void> _confirmClearHistory() async {
+    final historyCount = _queue.tasks
+        .where(
+          (task) =>
+              task.status == DownloadStatus.completed ||
+              task.status == DownloadStatus.failed ||
+              task.status == DownloadStatus.canceled,
+        )
+        .length;
+    if (historyCount == 0) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear all history?'),
+        content: Text(
+          'Remove $historyCount completed, failed, or canceled downloads from '
+          'the list? Downloaded files stay in their folders, and active or '
+          'queued downloads are kept.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Clear history'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await _queue.clearHistory();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Download history cleared.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not clear history: $error')),
+      );
     }
   }
 
@@ -331,6 +384,23 @@ class _DownloadsPageState extends State<DownloadsPage> {
                                                 ),
                                                 onRetry: (task) => unawaited(
                                                   _queue.retryDownload(task.id),
+                                                ),
+                                                showClearHistory:
+                                                    _selectedCategory == 0,
+                                                hasHistory: _queue.tasks.any(
+                                                  (task) =>
+                                                      task.status ==
+                                                          DownloadStatus
+                                                              .completed ||
+                                                      task.status ==
+                                                          DownloadStatus
+                                                              .failed ||
+                                                      task.status ==
+                                                          DownloadStatus
+                                                              .canceled,
+                                                ),
+                                                onClearHistory: () => unawaited(
+                                                  _confirmClearHistory(),
                                                 ),
                                               ),
                                             ],
@@ -839,6 +909,9 @@ class _DownloadListCard extends StatelessWidget {
     required this.onResume,
     required this.onCancel,
     required this.onRetry,
+    required this.showClearHistory,
+    required this.hasHistory,
+    required this.onClearHistory,
   });
 
   final String title;
@@ -850,6 +923,9 @@ class _DownloadListCard extends StatelessWidget {
   final ValueChanged<DownloadTask> onResume;
   final ValueChanged<DownloadTask> onCancel;
   final ValueChanged<DownloadTask> onRetry;
+  final bool showClearHistory;
+  final bool hasHistory;
+  final VoidCallback onClearHistory;
 
   @override
   Widget build(BuildContext context) {
@@ -880,9 +956,21 @@ class _DownloadListCard extends StatelessWidget {
                   style: const TextStyle(color: _muted, fontSize: 12),
                 ),
                 const SizedBox(width: 13),
-                IconButton(
+                PopupMenuButton<_DownloadListOption>(
+                  enabled: showClearHistory,
                   tooltip: 'More options',
-                  onPressed: null,
+                  onSelected: (option) {
+                    if (option == _DownloadListOption.clearHistory) {
+                      onClearHistory();
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem<_DownloadListOption>(
+                      value: _DownloadListOption.clearHistory,
+                      enabled: hasHistory,
+                      child: const Text('Clear all history'),
+                    ),
+                  ],
                   icon: const Icon(Icons.more_horiz_rounded, size: 20),
                 ),
               ],

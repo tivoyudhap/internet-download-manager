@@ -253,6 +253,29 @@ class DownloadQueueController extends ChangeNotifier {
     await processQueue();
   }
 
+  Future<void> clearHistory() async {
+    await load();
+    if (_loadError != null) {
+      throw StateError(
+        'Cannot clear history because the saved queue failed to load.',
+      );
+    }
+    await _serialize(() async {
+      final updatedTasks = _tasks
+          .where(
+            (task) =>
+                task.status != DownloadStatus.completed &&
+                task.status != DownloadStatus.failed &&
+                task.status != DownloadStatus.canceled,
+          )
+          .toList();
+      if (updatedTasks.length == _tasks.length) return;
+      await _store.save(updatedTasks);
+      _tasks = updatedTasks;
+      notifyListeners();
+    });
+  }
+
   DownloadTask? _taskById(String id) {
     for (final task in _tasks) {
       if (task.id == id) return task;

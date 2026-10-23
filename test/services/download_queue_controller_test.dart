@@ -192,6 +192,38 @@ void main() {
     expect((await store.load()).single.destinationDirectory, selectedDirectory);
   });
 
+  test(
+    'clears terminal history and preserves queued or paused tasks',
+    () async {
+      DownloadTask task(String name, DownloadStatus status) =>
+          DownloadTask.fromUrl(
+            'https://example.com/$name.zip',
+            '/tmp/Downloads',
+          ).copyWith(status: status);
+      await store.save([
+        task('done', DownloadStatus.completed),
+        task('broken', DownloadStatus.failed),
+        task('stopped', DownloadStatus.canceled),
+        task('waiting', DownloadStatus.queued),
+        task('paused', DownloadStatus.paused),
+      ]);
+      final controller = DownloadQueueController(store);
+      addTearDown(controller.dispose);
+      await controller.load();
+
+      await controller.clearHistory();
+
+      expect(controller.tasks.map((task) => task.fileName), [
+        'waiting.zip',
+        'paused.zip',
+      ]);
+      expect((await store.load()).map((task) => task.fileName), [
+        'waiting.zip',
+        'paused.zip',
+      ]);
+    },
+  );
+
   test('concurrent additions are both retained in storage', () async {
     final controller = DownloadQueueController(store);
     addTearDown(controller.dispose);
