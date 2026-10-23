@@ -71,10 +71,6 @@ function installFloatingButton() {
     event.preventDefault();
     event.stopPropagation();
     const source = findVideoSource();
-    if (!source) {
-      button.textContent = 'Video source not found';
-      return;
-    }
     button.disabled = true;
     button.textContent = 'Sending to IDM…';
     chrome.runtime.sendMessage(
@@ -105,7 +101,7 @@ function findVideoSource() {
         url: source.src || source.getAttribute('data-src') || '',
         type: source.type || '',
       })),
-    ].filter((source) => source.url);
+    ].filter((source) => source.url && !source.url.startsWith('blob:'));
 
     const playableSources = candidates
       .map((source) => ({ ...source, url: normalizeMediaUrl(source.url) }))
@@ -118,6 +114,34 @@ function findVideoSource() {
         kind: isManifestSource(selected) ? 'stream' : 'media',
         pageUrl: location.href,
       };
+    }
+  }
+
+  const pageHost = location.hostname.toLowerCase();
+  if (pageHost === 'facebook.com' || pageHost.endsWith('.facebook.com') || pageHost === 'fb.watch') {
+    const resources = performance.getEntriesByType('resource');
+    for (let index = resources.length - 1; index >= 0; index -= 1) {
+      const rawUrl = resources[index].name;
+      try {
+        const url = new URL(rawUrl);
+        const path = url.pathname.toLowerCase();
+        const isFacebookMediaHost =
+          url.hostname === 'fbcdn.net' || url.hostname.endsWith('.fbcdn.net');
+        const isManifest = /\.(m3u8|mpd)$/i.test(path);
+        const isProgressiveVideo = /\.(mp4|m4v|webm|mov)$/i.test(path) &&
+          !url.searchParams.has('bytestart') &&
+          !url.searchParams.has('byteend') &&
+          !/\/(?:init|segment|chunk)(?:\/|[-_.]|$)/i.test(path);
+        if (isFacebookMediaHost && (isManifest || isProgressiveVideo)) {
+          return {
+            url: url.href,
+            kind: isManifest ? 'stream' : 'media',
+            pageUrl: location.href,
+          };
+        }
+      } catch (_) {
+        // Ignore non-URL performance entries.
+      }
     }
   }
 

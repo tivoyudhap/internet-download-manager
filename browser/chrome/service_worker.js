@@ -47,7 +47,7 @@ chrome.webRequest.onHeadersReceived.addListener(
       rememberStream(request);
       return;
     }
-    if (isDirectVideoResponse(request, contentType)) rememberMedia(request);
+    if (isDirectVideoResponse(request, contentType, details)) rememberMedia(request);
   },
   { urls: ['<all_urls>'] },
   ['responseHeaders'],
@@ -367,7 +367,7 @@ function findVideoSourceInFrame() {
         type: source.type || '',
       })),
     ]
-      .filter((source) => source.url)
+      .filter((source) => source.url && !source.url.startsWith('blob:'))
       .map((source) => {
         try {
           const url = new URL(source.url, location.href);
@@ -388,6 +388,32 @@ function findVideoSourceInFrame() {
         kind: isManifest(selected) ? 'stream' : 'media',
         pageUrl: location.href,
       };
+    }
+  }
+  const pageHost = location.hostname.toLowerCase();
+  if (pageHost === 'facebook.com' || pageHost.endsWith('.facebook.com') || pageHost === 'fb.watch') {
+    const resources = performance.getEntriesByType('resource');
+    for (let index = resources.length - 1; index >= 0; index -= 1) {
+      try {
+        const url = new URL(resources[index].name);
+        const path = url.pathname.toLowerCase();
+        const isFacebookMediaHost =
+          url.hostname === 'fbcdn.net' || url.hostname.endsWith('.fbcdn.net');
+        const isManifest = /\.(m3u8|mpd)$/i.test(path);
+        const isProgressiveVideo = /\.(mp4|m4v|webm|mov)$/i.test(path) &&
+          !url.searchParams.has('bytestart') &&
+          !url.searchParams.has('byteend') &&
+          !/\/(?:init|segment|chunk)(?:\/|[-_.]|$)/i.test(path);
+        if (isFacebookMediaHost && (isManifest || isProgressiveVideo)) {
+          return {
+            url: url.href,
+            kind: isManifest ? 'stream' : 'media',
+            pageUrl: location.href,
+          };
+        }
+      } catch (_) {
+        // Ignore non-URL performance entries.
+      }
     }
   }
   return null;
@@ -445,14 +471,29 @@ function rememberMedia(request) {
   void chrome.storage.session.set({ [key]: media });
 }
 
-function isDirectVideoResponse(request, contentType) {
+function isDirectVideoResponse(request, contentType, details) {
   const mimeType = typeof contentType === 'string' ? contentType : '';
-  if (
-    request.requestType !== 'media' ||
-    mimeType === 'video/mp2t' ||
-    mimeType.includes('iso.segment')
-  ) return false;
-  if (mimeType.startsWith('video/')) return true;
+  if (mimeType === 'video/mp2t' || mimeType.includes('iso.segment')) return false;
+  const isFacebookRequest = (() => {
+    try {
+      const host = new URL(request.pageUrl || request.url).hostname.toLowerCase();
+      return host === 'facebook.com' || host.endsWith('.facebook.com') ||
+        host === 'fb.watch' || host === 'fbcdn.net' || host.endsWith('.fbcdn.net');
+    } catch (_) {
+      return false;
+    }
+  })();
+  if (mimeType.startsWith('video/')) {
+    const contentRange = (details.responseHeaders || [])
+      .find((header) => header.name.toLowerCase() === 'content-range')?.value;
+    if (details.statusCode === 206 && !isCompleteContentRange(contentRange)) return false;
+    if (request.requestType === 'media') return true;
+    if (!isFacebookRequest || !['xmlhttprequest', 'other'].includes(request.requestType)) {
+      return false;
+    }
+    return details.statusCode === 200 || isCompleteContentRange(contentRange);
+  }
+  if (request.requestType !== 'media') return false;
   try {
     return /\.(mp4|m4v|webm|mov|avi|mkv|ogv|3gp)$/i.test(
       new URL(request.url).pathname,
@@ -460,6 +501,11 @@ function isDirectVideoResponse(request, contentType) {
   } catch (_) {
     return false;
   }
+}
+
+function isCompleteContentRange(value) {
+  const match = /^bytes\s+0-(\d+)\/(\d+)$/i.exec(value || '');
+  return Boolean(match && Number(match[1]) + 1 === Number(match[2]));
 }
 
 function selectedRequestHeaders(headers) {
