@@ -4,8 +4,9 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = await readFile(new URL('./service_worker.js', import.meta.url), 'utf8');
+const contentSource = await readFile(new URL('./content_script.js', import.meta.url), 'utf8');
 
-function loadWorker({ response = { ok: true }, lastError = null } = {}) {
+function loadWorker({ response = { ok: true }, lastError = null, videoSource = null } = {}) {
   const listeners = { beforeSendHeaders: [], headersReceived: [] };
   const menus = [];
   const nativeMessages = [];
@@ -22,6 +23,9 @@ function loadWorker({ response = { ok: true }, lastError = null } = {}) {
         callback(response);
         chrome.runtime.lastError = null;
       },
+    },
+    tabs: {
+      sendMessage: async () => videoSource,
     },
     webRequest: {
       onBeforeSendHeaders: { addListener: (listener) => listeners.beforeSendHeaders.push(listener) },
@@ -47,7 +51,23 @@ function loadWorker({ response = { ok: true }, lastError = null } = {}) {
   return { chrome, listeners, menus, nativeMessages, badges, titles, session };
 }
 
-test('registers Download with IDM for links and video/audio elements', () => {
+function loadContentScript(video, pageUrl) {
+  let listener;
+  const chrome = {
+    runtime: {
+      onMessage: { addListener: (callback) => { listener = callback; } },
+    },
+  };
+  vm.runInNewContext(contentSource, {
+    chrome,
+    document: { querySelectorAll: () => [video] },
+    location: { href: pageUrl },
+    URL,
+  });
+  return listener;
+}
+
+test('registers Download with IDM for links, media elements, and page contexts', () => {
   const worker = loadWorker();
   worker.listeners.installed();
   assert.deepEqual(JSON.parse(JSON.stringify(worker.menus)), [{
@@ -55,6 +75,29 @@ test('registers Download with IDM for links and video/audio elements', () => {
     title: 'Download with IDM',
     contexts: ['link', 'video', 'audio', 'page'],
   }]);
+});
+
+test('finds a manifest source inside a video element even before playback', () => {
+  const listener = loadContentScript({
+    paused: true,
+    readyState: 0,
+    currentSrc: 'blob:https://example.test/video',
+    src: '',
+    querySelectorAll: () => [{
+      src: 'https://hls.example.com/master.m3u8?token=abc',
+      type: 'application/vnd.apple.mpegurl',
+      getAttribute: () => '',
+    }],
+  }, 'https://example.test/stream.php');
+  let source;
+
+  listener({ type: 'idm_get_video_source' }, {}, (value) => { source = value; });
+
+  assert.deepEqual(JSON.parse(JSON.stringify(source)), {
+    url: 'https://hls.example.com/master.m3u8?token=abc',
+    kind: 'stream',
+    pageUrl: 'https://example.test/stream.php',
+  });
 });
 
 test('sends a direct link as a regular download', async () => {
@@ -127,6 +170,27 @@ test('uses the most recently captured HLS manifest from the page context', async
   assert.equal(worker.nativeMessages[0].message.url, 'https://cdn.example.com/master.m3u8?sig=page-token');
   assert.equal(worker.nativeMessages[0].message.isStream, true);
   assert.equal(worker.nativeMessages[0].message.headers.referer, 'https://site.example/watch');
+});
+
+test('uses a video source read from the clicked iframe when no request was captured', async () => {
+  const worker = loadWorker({
+    videoSource: {
+      url: 'https://hls.example.com/master.m3u8?token=frame',
+      kind: 'stream',
+      pageUrl: 'https://example.test/stream.php',
+    },
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm',
+    tabId: 14,
+    frameId: 3,
+  });
+
+  const message = worker.nativeMessages[0].message;
+  assert.equal(message.url, 'https://hls.example.com/master.m3u8?token=frame');
+  assert.equal(message.isStream, true);
+  assert.equal(message.headers.referer, 'https://example.test/stream.php');
 });
 
 test('uses a captured direct video response from the page context', async () => {

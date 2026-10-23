@@ -67,10 +67,22 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
   let rawUrl = info.linkUrl || info.srcUrl;
   let isStream = isStreamManifest(rawUrl);
   let headers = {};
+  let detectedSource;
+  if (info.tabId >= 0 && (!rawUrl || rawUrl.startsWith('blob:'))) {
+    detectedSource = await readVideoSource(info.tabId, info.frameId);
+    if (detectedSource?.url) {
+      rawUrl = detectedSource.url;
+      isStream = detectedSource.kind === 'stream' || isStreamManifest(rawUrl);
+    }
+  }
   if (info.tabId >= 0) {
     const isBlob = rawUrl?.startsWith('blob:');
     const wantsCapturedMedia =
-      !rawUrl || isBlob || isStream || ['video', 'audio'].includes(info.mediaType);
+      Boolean(detectedSource) ||
+      !rawUrl ||
+      isBlob ||
+      isStream ||
+      ['video', 'audio'].includes(info.mediaType);
     if (wantsCapturedMedia) {
       const streamKey = streamStorageKey(info.tabId);
       const mediaKey = mediaStorageKey(info.tabId);
@@ -103,6 +115,9 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
         }
       }
     }
+  }
+  if (detectedSource?.pageUrl && !headers.referer) {
+    headers.referer = detectedSource.pageUrl;
   }
   if (!rawUrl || rawUrl.startsWith('blob:')) {
     setStatus('!', 'No video stream found. Start playback, then try again.');
@@ -159,6 +174,19 @@ function streamStorageKey(tabId) {
 
 function mediaStorageKey(tabId) {
   return `${MEDIA_KEY_PREFIX}${tabId}`;
+}
+
+async function readVideoSource(tabId, frameId) {
+  try {
+    const options = Number.isInteger(frameId) ? { frameId } : {};
+    return await chrome.tabs.sendMessage(
+      tabId,
+      { type: 'idm_get_video_source' },
+      options,
+    );
+  } catch (_) {
+    return null;
+  }
 }
 
 function rememberStream(request) {
