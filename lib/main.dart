@@ -676,21 +676,13 @@ class _Sidebar extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(22, 24, 18, 30),
             child: Row(
               children: [
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF2586D1), Color(0xFF145A9C)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons.download_rounded,
-                    color: Colors.white,
-                    size: 23,
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.asset(
+                    'assets/app_icon.png',
+                    width: 38,
+                    height: 38,
+                    fit: BoxFit.cover,
                   ),
                 ),
                 const SizedBox(width: 11),
