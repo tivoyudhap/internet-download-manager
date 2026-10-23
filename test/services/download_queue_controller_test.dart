@@ -180,6 +180,18 @@ void main() {
     expect(notifications, 1);
   });
 
+  test('new tasks use the selected download directory', () async {
+    const selectedDirectory = '/tmp/Custom Download Folder';
+    await store.saveDownloadDirectory(selectedDirectory);
+    final controller = DownloadQueueController(store);
+    addTearDown(controller.dispose);
+
+    final task = await controller.addUrl('https://example.com/new-file.zip');
+
+    expect(task.destinationDirectory, selectedDirectory);
+    expect((await store.load()).single.destinationDirectory, selectedDirectory);
+  });
+
   test('concurrent additions are both retained in storage', () async {
     final controller = DownloadQueueController(store);
     addTearDown(controller.dispose);

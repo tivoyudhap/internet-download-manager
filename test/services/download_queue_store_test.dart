@@ -61,11 +61,73 @@ void main() {
   });
 
   test('uses the configured home Downloads directory', () async {
+    expect(await store.configuredDownloadDirectory(), isNull);
     expect(
       await store.defaultDownloadDirectory(),
       '${temporaryDirectory.path}${Platform.pathSeparator}home${Platform.pathSeparator}Downloads',
     );
   });
+
+  test(
+    'persists a selected download directory across store instances',
+    () async {
+      const selectedDirectory = '/Users/test/Archive Downloads';
+      await store.saveDownloadDirectory(selectedDirectory);
+
+      final restoredStore = DownloadQueueStore(
+        supportDirectory: Directory('${temporaryDirectory.path}/support'),
+        homeDirectory: Directory('${temporaryDirectory.path}/home'),
+      );
+
+      expect(
+        await restoredStore.configuredDownloadDirectory(),
+        selectedDirectory,
+      );
+      expect(await restoredStore.defaultDownloadDirectory(), selectedDirectory);
+    },
+  );
+
+  test('clearing the selected directory restores the Downloads default', () async {
+    await store.saveDownloadDirectory('/tmp/Custom folder');
+    await store.saveDownloadDirectory(null);
+
+    expect(await store.configuredDownloadDirectory(), isNull);
+    expect(
+      await store.defaultDownloadDirectory(),
+      '${temporaryDirectory.path}${Platform.pathSeparator}home${Platform.pathSeparator}Downloads',
+    );
+  });
+
+  test('falls back to Downloads when saved settings are malformed', () async {
+    final queueFile = await store.browserBridgeTokenFile();
+    final settingsFile = File(
+      '${queueFile.parent.path}${Platform.pathSeparator}settings.json',
+    );
+    await settingsFile.parent.create(recursive: true);
+    await settingsFile.writeAsString('{not valid json');
+
+    expect(await store.configuredDownloadDirectory(), isNull);
+    expect(
+      await store.defaultDownloadDirectory(),
+      '${temporaryDirectory.path}${Platform.pathSeparator}home${Platform.pathSeparator}Downloads',
+    );
+  });
+
+  test(
+    'changing the directory does not alter the saved download queue',
+    () async {
+      final task = DownloadTask.fromUrl(
+        'https://example.com/file.zip',
+        '/tmp/Downloads',
+      );
+      await store.save([task]);
+
+      await store.saveDownloadDirectory('/tmp/Custom folder');
+
+      expect((await store.load()).single.id, task.id);
+      expect(await store.defaultDownloadDirectory(), '/tmp/Custom folder');
+    },
+  );
 
   test('stores the browser bridge token beside the persisted queue', () async {
     final tokenFile = await store.browserBridgeTokenFile();

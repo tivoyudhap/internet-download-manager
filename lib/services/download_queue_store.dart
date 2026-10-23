@@ -39,10 +39,17 @@ class DownloadQueueStore {
   Future<String?> configuredDownloadDirectory() async {
     final file = await _settingsFile();
     if (!await file.exists()) return null;
-    final decoded =
-        jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-    final directory = decoded['downloadDirectory'] as String?;
-    return directory == null || directory.trim().isEmpty ? null : directory;
+    final dynamic decoded;
+    try {
+      decoded = jsonDecode(await file.readAsString());
+    } on FormatException {
+      return null;
+    }
+    if (decoded is! Map<String, dynamic>) return null;
+    final directory = decoded['downloadDirectory'];
+    return directory is String && directory.trim().isNotEmpty
+        ? directory
+        : null;
   }
 
   Future<void> saveDownloadDirectory(String? directory) async {

@@ -18,9 +18,16 @@ const _canvas = Color(0xFFF4F7FB);
 void main() => runApp(const DownloadManagerApp());
 
 class DownloadManagerApp extends StatelessWidget {
-  const DownloadManagerApp({super.key, this.queueController});
+  const DownloadManagerApp({
+    super.key,
+    this.queueController,
+    this.settingsStore,
+    this.directoryPicker,
+  });
 
   final DownloadQueueController? queueController;
+  final DownloadQueueStore? settingsStore;
+  final DownloadDirectoryPicker? directoryPicker;
 
   @override
   Widget build(BuildContext context) {
@@ -33,7 +40,11 @@ class DownloadManagerApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: _blue),
         fontFamily: 'Arial',
       ),
-      home: DownloadsPage(queueController: queueController),
+      home: DownloadsPage(
+        queueController: queueController,
+        settingsStore: settingsStore,
+        directoryPicker: directoryPicker,
+      ),
     );
   }
 }
@@ -47,9 +58,16 @@ class _Category {
 }
 
 class DownloadsPage extends StatefulWidget {
-  const DownloadsPage({super.key, this.queueController});
+  const DownloadsPage({
+    super.key,
+    this.queueController,
+    this.settingsStore,
+    this.directoryPicker,
+  });
 
   final DownloadQueueController? queueController;
+  final DownloadQueueStore? settingsStore;
+  final DownloadDirectoryPicker? directoryPicker;
 
   @override
   State<DownloadsPage> createState() => _DownloadsPageState();
@@ -58,6 +76,7 @@ class DownloadsPage extends StatefulWidget {
 class _DownloadsPageState extends State<DownloadsPage> {
   late final DownloadQueueController _queue;
   DownloadQueueStore? _queueStore;
+  late final DownloadDirectoryPicker _directoryPicker;
   BrowserBridgeServer? _browserBridge;
   final _searchController = TextEditingController();
   String? _downloadDirectory;
@@ -85,7 +104,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
   @override
   void initState() {
     super.initState();
-    _queueStore = DownloadQueueStore();
+    _queueStore = widget.settingsStore ?? DownloadQueueStore();
+    _directoryPicker =
+        widget.directoryPicker ?? const DownloadDirectoryPicker();
     unawaited(_loadDownloadDirectory());
     if (widget.queueController == null) {
       _queue = DownloadQueueController(_queueStore!);
@@ -107,7 +128,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
   Future<void> _chooseDownloadDirectory() async {
     setState(() => _isUpdatingDirectory = true);
     try {
-      final directory = await DownloadDirectoryPicker.pickDirectory();
+      final directory = await _directoryPicker.pickDirectory();
       if (directory == null) return;
       await _queueStore!.saveDownloadDirectory(directory);
       if (mounted) setState(() => _downloadDirectory = directory);
@@ -125,7 +146,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
   Future<void> _resetDownloadDirectory() async {
     setState(() => _isUpdatingDirectory = true);
     try {
-      await DownloadDirectoryPicker.clearAccess();
+      await _directoryPicker.clearAccess();
       await _queueStore!.saveDownloadDirectory(null);
       final directory = await _queueStore!.defaultDownloadDirectory();
       if (mounted) setState(() => _downloadDirectory = directory);

@@ -1,11 +1,13 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:internet_download_manager/main.dart';
 import 'package:internet_download_manager/models/download_task.dart';
 import 'package:internet_download_manager/services/download_queue_controller.dart';
 import 'package:internet_download_manager/services/download_engine.dart';
+import 'package:internet_download_manager/services/download_directory_picker.dart';
 import 'package:internet_download_manager/services/download_queue_store.dart';
 
 class _ImmediateDownloadEngine implements DownloadEngine {
@@ -78,6 +80,25 @@ class _MemoryQueueStore extends DownloadQueueStore {
   Future<String> defaultDownloadDirectory() async => '/test/Downloads';
 }
 
+class _MemorySettingsStore extends DownloadQueueStore {
+  _MemorySettingsStore();
+
+  final String homeDirectoryPath = '/test-home';
+  String? selectedDirectory;
+
+  @override
+  Future<String?> configuredDownloadDirectory() async => selectedDirectory;
+
+  @override
+  Future<String> defaultDownloadDirectory() async =>
+      selectedDirectory ?? '$homeDirectoryPath/Downloads';
+
+  @override
+  Future<void> saveDownloadDirectory(String? directory) async {
+    selectedDirectory = directory;
+  }
+}
+
 class _DelayedLoadQueueStore extends _MemoryQueueStore {
   final loadResult = Completer<List<DownloadTask>>();
 
@@ -89,6 +110,26 @@ class _FailingLoadQueueStore extends _MemoryQueueStore {
   @override
   Future<List<DownloadTask>> load() async =>
       throw const FormatException('Saved queue is not valid JSON.');
+}
+
+class _FakeDownloadDirectoryPicker extends DownloadDirectoryPicker {
+  _FakeDownloadDirectoryPicker({this.selectedDirectory, this.pickError});
+
+  final String? selectedDirectory;
+  final Object? pickError;
+  final calls = <String>[];
+
+  @override
+  Future<String?> pickDirectory() async {
+    calls.add('pickDirectory');
+    if (pickError case final error?) throw error;
+    return selectedDirectory;
+  }
+
+  @override
+  Future<void> clearAccess() async {
+    calls.add('clearAccess');
+  }
 }
 
 void main() {
@@ -358,5 +399,101 @@ void main() {
 
     expect(find.text('Enter a valid HTTP or HTTPS URL.'), findsOneWidget);
     expect(find.text('Add new download'), findsOneWidget);
+  });
+
+  testWidgets('selects and resets the download folder from Settings', (
+    WidgetTester tester,
+  ) async {
+    final settingsStore = _MemorySettingsStore();
+    final picker = _FakeDownloadDirectoryPicker(
+      selectedDirectory: '/tmp/Chosen folder',
+    );
+
+    await tester.pumpWidget(
+      DownloadManagerApp(
+        queueController: DownloadQueueController(_MemoryQueueStore()),
+        settingsStore: settingsStore,
+        directoryPicker: picker,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Download location'), findsOneWidget);
+    expect(find.text('/test-home/Downloads'), findsOneWidget);
+
+    await tester.tap(find.text('Choose folder'));
+    await tester.pumpAndSettle();
+    expect(find.text('/tmp/Chosen folder'), findsOneWidget);
+    expect(
+      await settingsStore.defaultDownloadDirectory(),
+      '/tmp/Chosen folder',
+    );
+
+    await tester.tap(find.text('Use Downloads folder'));
+    await tester.pumpAndSettle();
+    expect(find.text('/test-home/Downloads'), findsOneWidget);
+    expect(await settingsStore.configuredDownloadDirectory(), isNull);
+    expect(picker.calls, ['pickDirectory', 'clearAccess']);
+  });
+
+  testWidgets('leaves the current folder unchanged when picker is canceled', (
+    WidgetTester tester,
+  ) async {
+    final settingsStore = _MemorySettingsStore()
+      ..selectedDirectory = '/tmp/Existing folder';
+    final picker = _FakeDownloadDirectoryPicker();
+
+    await tester.pumpWidget(
+      DownloadManagerApp(
+        queueController: DownloadQueueController(_MemoryQueueStore()),
+        settingsStore: settingsStore,
+        directoryPicker: picker,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Choose folder'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('/tmp/Existing folder'), findsOneWidget);
+    expect(
+      await settingsStore.defaultDownloadDirectory(),
+      '/tmp/Existing folder',
+    );
+  });
+
+  testWidgets('shows a picker error and remains usable', (
+    WidgetTester tester,
+  ) async {
+    final settingsStore = _MemorySettingsStore();
+    final picker = _FakeDownloadDirectoryPicker(
+      pickError: PlatformException(
+        code: 'PICKER_FAILED',
+        message: 'Picker failed',
+      ),
+    );
+
+    await tester.pumpWidget(
+      DownloadManagerApp(
+        queueController: DownloadQueueController(_MemoryQueueStore()),
+        settingsStore: settingsStore,
+        directoryPicker: picker,
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Choose folder'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Could not select folder: Picker failed'), findsOneWidget);
+    expect(
+      tester.widget<FilledButton>(find.byType(FilledButton)).onPressed,
+      isNotNull,
+    );
+    expect(await settingsStore.configuredDownloadDirectory(), isNull);
   });
 }
