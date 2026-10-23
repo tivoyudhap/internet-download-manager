@@ -30,8 +30,34 @@ class DownloadQueueStore {
   }
 
   Future<String> defaultDownloadDirectory() async {
+    final configured = await configuredDownloadDirectory();
+    if (configured != null) return configured;
     final home = (homeDirectory ?? Directory(_homeDirectory())).path;
     return _join(home, 'Downloads');
+  }
+
+  Future<String?> configuredDownloadDirectory() async {
+    final file = await _settingsFile();
+    if (!await file.exists()) return null;
+    final decoded =
+        jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+    final directory = decoded['downloadDirectory'] as String?;
+    return directory == null || directory.trim().isEmpty ? null : directory;
+  }
+
+  Future<void> saveDownloadDirectory(String? directory) async {
+    final file = await _settingsFile();
+    if (directory == null) {
+      if (await file.exists()) await file.delete();
+      return;
+    }
+    await file.parent.create(recursive: true);
+    final temporaryFile = File('${file.path}.tmp');
+    await temporaryFile.writeAsString(
+      jsonEncode({'downloadDirectory': directory}),
+      flush: true,
+    );
+    await temporaryFile.rename(file.path);
   }
 
   Future<File> browserBridgeTokenFile() async {
@@ -50,6 +76,11 @@ class DownloadQueueStore {
     return File(
       _join(appSupportDirectory, 'InternetDownloadManager', 'downloads.json'),
     );
+  }
+
+  Future<File> _settingsFile() async {
+    final queueFile = await _queueFile();
+    return File(_join(queueFile.parent.path, 'settings.json'));
   }
 
   String _homeDirectory() {

@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'models/download_task.dart';
 import 'services/browser_bridge_server.dart';
+import 'services/download_directory_picker.dart';
 import 'services/download_queue_controller.dart';
 import 'services/download_queue_store.dart';
 
@@ -58,6 +60,9 @@ class _DownloadsPageState extends State<DownloadsPage> {
   DownloadQueueStore? _queueStore;
   BrowserBridgeServer? _browserBridge;
   final _searchController = TextEditingController();
+  String? _downloadDirectory;
+  bool _settingsOpen = false;
+  bool _isUpdatingDirectory = false;
 
   static const _categories = <_Category>[
     _Category('All downloads', Icons.inbox_rounded, null),
@@ -80,14 +85,59 @@ class _DownloadsPageState extends State<DownloadsPage> {
   @override
   void initState() {
     super.initState();
+    _queueStore = DownloadQueueStore();
+    unawaited(_loadDownloadDirectory());
     if (widget.queueController == null) {
-      _queueStore = DownloadQueueStore();
       _queue = DownloadQueueController(_queueStore!);
       unawaited(_startBrowserBridge());
     } else {
       _queue = widget.queueController!;
     }
     _queue.load();
+  }
+
+  Future<void> _loadDownloadDirectory() async {
+    final store = _queueStore!;
+    final directory =
+        await store.configuredDownloadDirectory() ??
+        await store.defaultDownloadDirectory();
+    if (mounted) setState(() => _downloadDirectory = directory);
+  }
+
+  Future<void> _chooseDownloadDirectory() async {
+    setState(() => _isUpdatingDirectory = true);
+    try {
+      final directory = await DownloadDirectoryPicker.pickDirectory();
+      if (directory == null) return;
+      await _queueStore!.saveDownloadDirectory(directory);
+      if (mounted) setState(() => _downloadDirectory = directory);
+    } on PlatformException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not select folder: ${error.message}')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUpdatingDirectory = false);
+    }
+  }
+
+  Future<void> _resetDownloadDirectory() async {
+    setState(() => _isUpdatingDirectory = true);
+    try {
+      await DownloadDirectoryPicker.clearAccess();
+      await _queueStore!.saveDownloadDirectory(null);
+      final directory = await _queueStore!.defaultDownloadDirectory();
+      if (mounted) setState(() => _downloadDirectory = directory);
+    } on PlatformException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not reset folder: ${error.message}')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUpdatingDirectory = false);
+    }
   }
 
   Future<void> _startBrowserBridge() async {
@@ -190,83 +240,99 @@ class _DownloadsPageState extends State<DownloadsPage> {
                       .map((item) => _count(item.status))
                       .toList(),
                   selectedIndex: _selectedCategory,
-                  onSelected: (index) =>
-                      setState(() => _selectedCategory = index),
+                  settingsSelected: _settingsOpen,
+                  onSelected: (index) => setState(() {
+                    _settingsOpen = false;
+                    _selectedCategory = index;
+                  }),
+                  onSettings: () => setState(() => _settingsOpen = true),
                 ),
                 Expanded(
-                  child: Column(
-                    children: [
-                      _TopBar(
-                        searchOpen: _searchOpen,
-                        searchController: _searchController,
-                        onSearch: () =>
-                            setState(() => _searchOpen = !_searchOpen),
-                        onSearchChanged: (_) => setState(() {}),
-                      ),
-                      Expanded(
-                        child: LayoutBuilder(
-                          builder: (context, constraints) =>
-                              SingleChildScrollView(
-                                padding: EdgeInsets.fromLTRB(
-                                  constraints.maxWidth < 900 ? 24 : 40,
-                                  32,
-                                  constraints.maxWidth < 900 ? 24 : 40,
-                                  32,
-                                ),
-                                child: Center(
-                                  child: ConstrainedBox(
-                                    constraints: const BoxConstraints(
-                                      maxWidth: 1320,
+                  child: _settingsOpen
+                      ? _SettingsPanel(
+                          downloadDirectory: _downloadDirectory,
+                          isUpdatingDirectory: _isUpdatingDirectory,
+                          onChooseDirectory: _chooseDownloadDirectory,
+                          onResetDirectory: _resetDownloadDirectory,
+                        )
+                      : Column(
+                          children: [
+                            _TopBar(
+                              searchOpen: _searchOpen,
+                              searchController: _searchController,
+                              onSearch: () =>
+                                  setState(() => _searchOpen = !_searchOpen),
+                              onSearchChanged: (_) => setState(() {}),
+                            ),
+                            Expanded(
+                              child: LayoutBuilder(
+                                builder: (context, constraints) =>
+                                    SingleChildScrollView(
+                                      padding: EdgeInsets.fromLTRB(
+                                        constraints.maxWidth < 900 ? 24 : 40,
+                                        32,
+                                        constraints.maxWidth < 900 ? 24 : 40,
+                                        32,
+                                      ),
+                                      child: Center(
+                                        child: ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxWidth: 1320,
+                                          ),
+                                          child: Column(
+                                            crossAxisAlignment:
+                                                CrossAxisAlignment.start,
+                                            children: [
+                                              _PageHeading(
+                                                selectedCategory:
+                                                    category.label,
+                                                onAdd: _showAddDownloadDialog,
+                                              ),
+                                              const SizedBox(height: 28),
+                                              _OverviewCards(
+                                                activeCount: _count(
+                                                  DownloadStatus.downloading,
+                                                ),
+                                                completedCount: _count(
+                                                  DownloadStatus.completed,
+                                                ),
+                                                queuedCount: _count(
+                                                  DownloadStatus.queued,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 28),
+                                              _DownloadListCard(
+                                                title: category.label,
+                                                tasks: _visibleTasks(),
+                                                isLoading: _queue.isLoading,
+                                                loadError: _queue.loadError,
+                                                onAdd: _showAddDownloadDialog,
+                                                onPause: (task) => unawaited(
+                                                  _queue.pauseDownload(task.id),
+                                                ),
+                                                onResume: (task) => unawaited(
+                                                  _queue.resumeDownload(
+                                                    task.id,
+                                                  ),
+                                                ),
+                                                onCancel: (task) => unawaited(
+                                                  _queue.cancelDownload(
+                                                    task.id,
+                                                  ),
+                                                ),
+                                                onRetry: (task) => unawaited(
+                                                  _queue.retryDownload(task.id),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
                                     ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        _PageHeading(
-                                          selectedCategory: category.label,
-                                          onAdd: _showAddDownloadDialog,
-                                        ),
-                                        const SizedBox(height: 28),
-                                        _OverviewCards(
-                                          activeCount: _count(
-                                            DownloadStatus.downloading,
-                                          ),
-                                          completedCount: _count(
-                                            DownloadStatus.completed,
-                                          ),
-                                          queuedCount: _count(
-                                            DownloadStatus.queued,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 28),
-                                        _DownloadListCard(
-                                          title: category.label,
-                                          tasks: _visibleTasks(),
-                                          isLoading: _queue.isLoading,
-                                          loadError: _queue.loadError,
-                                          onAdd: _showAddDownloadDialog,
-                                          onPause: (task) => unawaited(
-                                            _queue.pauseDownload(task.id),
-                                          ),
-                                          onResume: (task) => unawaited(
-                                            _queue.resumeDownload(task.id),
-                                          ),
-                                          onCancel: (task) => unawaited(
-                                            _queue.cancelDownload(task.id),
-                                          ),
-                                          onRetry: (task) => unawaited(
-                                            _queue.retryDownload(task.id),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ),
                               ),
+                            ),
+                          ],
                         ),
-                      ),
-                    ],
-                  ),
                 ),
               ],
             ),
@@ -277,18 +343,166 @@ class _DownloadsPageState extends State<DownloadsPage> {
   }
 }
 
+class _SettingsPanel extends StatelessWidget {
+  const _SettingsPanel({
+    required this.downloadDirectory,
+    required this.isUpdatingDirectory,
+    required this.onChooseDirectory,
+    required this.onResetDirectory,
+  });
+
+  final String? downloadDirectory;
+  final bool isUpdatingDirectory;
+  final VoidCallback onChooseDirectory;
+  final VoidCallback onResetDirectory;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          height: 74,
+          padding: const EdgeInsets.symmetric(horizontal: 30),
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            border: Border(bottom: BorderSide(color: Color(0xFFE8EDF4))),
+          ),
+          alignment: Alignment.centerLeft,
+          child: const Text(
+            'Internet Download Manager',
+            style: TextStyle(
+              color: _ink,
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(40),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 920),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Settings',
+                      style: TextStyle(
+                        color: _ink,
+                        fontSize: 28,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Choose where new downloads are saved.',
+                      style: TextStyle(color: _muted, fontSize: 14),
+                    ),
+                    const SizedBox(height: 28),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(24),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE8EDF4)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Download location',
+                            style: TextStyle(
+                              color: _ink,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          const Text(
+                            'New downloads will be saved in this folder. '
+                            'Existing downloads keep their current location.',
+                            style: TextStyle(color: _muted, fontSize: 13),
+                          ),
+                          const SizedBox(height: 20),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFF4F7FB),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: SelectableText(
+                              downloadDirectory ?? 'Loading…',
+                              style: const TextStyle(
+                                color: Color(0xFF40516A),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 18),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 10,
+                            children: [
+                              FilledButton.icon(
+                                onPressed: isUpdatingDirectory
+                                    ? null
+                                    : onChooseDirectory,
+                                icon: const Icon(Icons.folder_open_outlined),
+                                label: const Text('Choose folder'),
+                              ),
+                              OutlinedButton(
+                                onPressed: isUpdatingDirectory
+                                    ? null
+                                    : onResetDirectory,
+                                child: const Text('Use Downloads folder'),
+                              ),
+                              if (isUpdatingDirectory)
+                                const Padding(
+                                  padding: EdgeInsets.only(left: 4, top: 8),
+                                  child: SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _Sidebar extends StatelessWidget {
   const _Sidebar({
     required this.categories,
     required this.counts,
     required this.selectedIndex,
+    required this.settingsSelected,
     required this.onSelected,
+    required this.onSettings,
   });
 
   final List<_Category> categories;
   final List<int> counts;
   final int selectedIndex;
+  final bool settingsSelected;
   final ValueChanged<int> onSelected;
+  final VoidCallback onSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -373,26 +587,34 @@ class _Sidebar extends StatelessWidget {
             ),
           const Spacer(),
           const Divider(height: 1, color: Color(0xFFE8EDF4)),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 15, 20, 19),
-            child: Row(
-              children: [
-                Icon(Icons.settings_outlined, size: 18, color: _muted),
-                SizedBox(width: 11),
-                Text(
-                  'Settings',
-                  style: TextStyle(
-                    color: Color(0xFF58677C),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
+          InkWell(
+            onTap: onSettings,
+            child: Container(
+              color: settingsSelected ? const Color(0xFFEAF3FB) : Colors.white,
+              padding: const EdgeInsets.fromLTRB(20, 15, 16, 19),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.settings_outlined,
+                    size: 18,
+                    color: settingsSelected ? _blue : _muted,
                   ),
-                ),
-                Spacer(),
-                Text(
-                  'v1.0.0',
-                  style: TextStyle(color: Color(0xFFA1ACBA), fontSize: 11),
-                ),
-              ],
+                  const SizedBox(width: 11),
+                  Text(
+                    'Settings',
+                    style: TextStyle(
+                      color: settingsSelected ? _blue : const Color(0xFF58677C),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const Spacer(),
+                  const Text(
+                    'v1.0.0',
+                    style: TextStyle(color: Color(0xFFA1ACBA), fontSize: 11),
+                  ),
+                ],
+              ),
             ),
           ),
         ],
