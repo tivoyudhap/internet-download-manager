@@ -115,7 +115,7 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
             .sort((a, b) => b.observedAt - a.observedAt)[0];
         }
       } else if (isBlob || !rawUrl) {
-        const candidates = isFacebookPage ? [stream] : [stream, media];
+        const candidates = isFacebookPage ? [] : [stream, media];
         captured = candidates
           .filter(isRecent)
           .sort((a, b) => b.observedAt - a.observedAt)[0];
@@ -192,7 +192,7 @@ async function handleFloatingVideoDownload(source, tabId, senderPageUrl) {
       storedAudio[audioKey],
     ];
     const isFacebookPage = isFacebookPageUrl(source?.pageUrl || senderPageUrl);
-    const candidates = isFacebookPage ? [stream] : [stream, media];
+    const candidates = isFacebookPage ? [] : [stream, media];
     const isRecent = (item) =>
       item && Date.now() - item.observedAt <= MAX_STREAM_AGE_MS;
     const captured = candidates.find(
@@ -400,6 +400,7 @@ function findVideoSourceInFrame() {
     }
   }
   if (isFacebookPage(pageHost)) {
+    if (currentFacebookVideoId()) return null;
     const resources = performance.getEntriesByType('resource');
     for (let index = resources.length - 1; index >= 0; index -= 1) {
       try {
@@ -424,13 +425,17 @@ function findVideoSourceInFrame() {
 }
 
 function findFacebookPlayableSource() {
-  const capturedUrl = document.documentElement?.getAttribute(
-    'data-idm-facebook-playable-url',
-  );
-  if (isFacebookPlayableUrl(capturedUrl)) {
+  const capturedSources = parseFacebookCapturedSources();
+  const videoId = currentFacebookVideoId();
+  const matchingSources = videoId
+    ? capturedSources.filter((source) => source.videoIds?.includes(videoId))
+    : capturedSources;
+  matchingSources.sort((a, b) => b.priority - a.priority || b.capturedAt - a.capturedAt);
+  const captured = matchingSources[0];
+  if (captured && isFacebookPlayableUrl(captured.url)) {
     return {
-      url: capturedUrl,
-      kind: /\.mpd(?:$|\?)/i.test(capturedUrl) ? 'stream' : 'media',
+      url: captured.url,
+      kind: /\.mpd(?:$|\?)/i.test(captured.url) ? 'stream' : 'media',
       pageUrl: location.href,
     };
   }
@@ -458,6 +463,7 @@ function findFacebookPlayableSource() {
     }
   }
   candidates.sort((a, b) => b.quality - a.quality || b.scriptIndex - a.scriptIndex);
+  if (videoId && candidates.length !== 1) return null;
   const selected = candidates[0];
   return selected
     ? {
@@ -466,6 +472,28 @@ function findFacebookPlayableSource() {
         pageUrl: location.href,
       }
     : null;
+}
+
+function parseFacebookCapturedSources() {
+  try {
+    const value = document.documentElement?.getAttribute(
+      'data-idm-facebook-playable-sources',
+    );
+    const sources = JSON.parse(value || '[]');
+    return Array.isArray(sources) ? sources : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function currentFacebookVideoId() {
+  const match = /\/reel\/(\d+)/i.exec(location.pathname);
+  if (match) return match[1];
+  try {
+    return new URL(location.href).searchParams.get('v');
+  } catch (_) {
+    return null;
+  }
 }
 
 function isFacebookPlayableUrl(value) {

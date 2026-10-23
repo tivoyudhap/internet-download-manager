@@ -124,6 +124,7 @@ function findVideoSource() {
   }
 
   if (isFacebookPage(pageHost)) {
+    if (currentFacebookVideoId()) return null;
     const resources = performance.getEntriesByType('resource');
     for (let index = resources.length - 1; index >= 0; index -= 1) {
       const rawUrl = resources[index].name;
@@ -150,13 +151,17 @@ function findVideoSource() {
 }
 
 function findFacebookPlayableSource() {
-  const capturedUrl = document.documentElement?.getAttribute(
-    'data-idm-facebook-playable-url',
-  );
-  if (isFacebookPlayableUrl(capturedUrl)) {
+  const capturedSources = parseFacebookCapturedSources();
+  const videoId = currentFacebookVideoId();
+  const matchingSources = videoId
+    ? capturedSources.filter((source) => source.videoIds?.includes(videoId))
+    : capturedSources;
+  matchingSources.sort((a, b) => b.priority - a.priority || b.capturedAt - a.capturedAt);
+  const captured = matchingSources[0];
+  if (captured && isFacebookPlayableUrl(captured.url)) {
     return {
-      url: capturedUrl,
-      kind: /\.mpd(?:$|\?)/i.test(capturedUrl) ? 'stream' : 'media',
+      url: captured.url,
+      kind: /\.mpd(?:$|\?)/i.test(captured.url) ? 'stream' : 'media',
       pageUrl: location.href,
     };
   }
@@ -184,6 +189,7 @@ function findFacebookPlayableSource() {
     }
   }
   candidates.sort((a, b) => b.quality - a.quality || b.scriptIndex - a.scriptIndex);
+  if (videoId && candidates.length !== 1) return null;
   const selected = candidates[0];
   return selected
     ? {
@@ -192,6 +198,28 @@ function findFacebookPlayableSource() {
         pageUrl: location.href,
       }
     : null;
+}
+
+function parseFacebookCapturedSources() {
+  try {
+    const value = document.documentElement?.getAttribute(
+      'data-idm-facebook-playable-sources',
+    );
+    const sources = JSON.parse(value || '[]');
+    return Array.isArray(sources) ? sources : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function currentFacebookVideoId() {
+  const match = /\/reel\/(\d+)/i.exec(location.pathname);
+  if (match) return match[1];
+  try {
+    return new URL(location.href).searchParams.get('v');
+  } catch (_) {
+    return null;
+  }
 }
 
 function isFacebookPlayableUrl(value) {

@@ -1,5 +1,5 @@
 (() => {
-  const sourceAttribute = 'data-idm-facebook-playable-url';
+  const sourceAttribute = 'data-idm-facebook-playable-sources';
   const sourceKeys = new Set([
     'playable_url_quality_hd',
     'playable_url',
@@ -10,7 +10,7 @@
     'dash_manifest_url',
     'manifest_url',
   ]);
-  let currentPriority = 0;
+  let sources = [];
 
   function parseFacebookResponse(value) {
     if (typeof value !== 'string') return value;
@@ -41,24 +41,39 @@
     }
   }
 
-  function writeSource(value) {
+  function writeSource(value, videoIds, sourceKey) {
     if (!isPlayableUrl(value)) return;
-    const priority = /\.mpd(?:$|\?)/i.test(value) ? 3 : 2;
-    if (priority < currentPriority) return;
-    currentPriority = priority;
+    const priority = /\.mpd(?:$|\?)/i.test(value)
+      ? 3
+      : sourceKey.includes('hd') ? 2 : sourceKey === 'progressive_url' ? 1 : 0;
+    const entry = {
+      url: value,
+      videoIds: [...new Set(videoIds)],
+      priority,
+      capturedAt: Date.now(),
+    };
+    sources = [entry, ...sources.filter((source) => source.url !== value)].slice(0, 80);
     const root = document.documentElement;
-    if (root) root.setAttribute(sourceAttribute, value);
+    if (root) root.setAttribute(sourceAttribute, JSON.stringify(sources));
   }
 
-  function inspect(value, depth = 0) {
+  function inspect(value, depth = 0, inheritedIds = []) {
     if (!value || typeof value !== 'object' || depth > 24) return;
     if (Array.isArray(value)) {
-      for (const child of value) inspect(child, depth + 1);
+      for (const child of value) inspect(child, depth + 1, inheritedIds);
       return;
     }
+    const videoIds = [...inheritedIds];
     for (const [key, child] of Object.entries(value)) {
-      if (sourceKeys.has(key) && typeof child === 'string') writeSource(child);
-      if (child && typeof child === 'object') inspect(child, depth + 1);
+      if (/^(?:id|videoid|video_id)$/i.test(key) && (typeof child === 'string' || typeof child === 'number')) {
+        videoIds.push(String(child));
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (sourceKeys.has(key) && typeof child === 'string') {
+        writeSource(child, videoIds, key);
+      }
+      if (child && typeof child === 'object') inspect(child, depth + 1, videoIds);
     }
   }
 
