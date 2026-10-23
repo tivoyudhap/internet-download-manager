@@ -850,16 +850,6 @@ class _TopBar extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(Icons.desktop_windows_outlined, size: 17, color: _muted),
-          const SizedBox(width: 9),
-          const Text(
-            'Desktop app',
-            style: TextStyle(
-              color: _muted,
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
           const Spacer(),
           if (searchOpen)
             SizedBox(
@@ -890,20 +880,6 @@ class _TopBar extends StatelessWidget {
               Icons.search_rounded,
               color: Color(0xFF65758A),
               size: 20,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: const Color(0xFFE7F1FA),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(
-              Icons.person_outline_rounded,
-              color: _blue,
-              size: 19,
             ),
           ),
         ],
