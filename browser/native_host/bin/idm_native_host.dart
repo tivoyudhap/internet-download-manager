@@ -142,9 +142,37 @@ Map<String, String>? _validatedHeaders(Object? value) {
 }
 
 String _tokenFilePath() {
-  final supportDirectory = Platform.isWindows
-      ? (Platform.environment['APPDATA'] ??
-            '${Platform.environment['USERPROFILE'] ?? Directory.current.path}${Platform.pathSeparator}AppData${Platform.pathSeparator}Roaming')
-      : '${Platform.environment['HOME'] ?? Directory.current.path}${Platform.pathSeparator}Library${Platform.pathSeparator}Application Support';
-  return '$supportDirectory${Platform.pathSeparator}InternetDownloadManager${Platform.pathSeparator}browser_bridge.token';
+  final home = Platform.environment['HOME'] ?? Directory.current.path;
+  final separator = Platform.pathSeparator;
+  const tokenRelativePath = 'InternetDownloadManager';
+  final tokenFileName = '$tokenRelativePath${separator}browser_bridge.token';
+  if (Platform.isWindows) {
+    final supportDirectory =
+        Platform.environment['APPDATA'] ??
+        '${Platform.environment['USERPROFILE'] ?? home}${separator}AppData${separator}Roaming';
+    return '$supportDirectory$separator$tokenFileName';
+  }
+
+  if (Platform.isMacOS) {
+    final sandboxTokenPath = [
+      home,
+      'Library',
+      'Containers',
+      'com.tivoyudha.internetdownloadmanager',
+      'Data',
+      'Library',
+      'Application Support',
+      tokenRelativePath,
+      'browser_bridge.token',
+    ].join(separator);
+    if (File(sandboxTokenPath).existsSync()) return sandboxTokenPath;
+  }
+
+  return [
+    home,
+    'Library',
+    'Application Support',
+    tokenRelativePath,
+    'browser_bridge.token',
+  ].join(separator);
 }
