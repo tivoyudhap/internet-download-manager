@@ -26,7 +26,7 @@ void main() {
       expect(task.fileName, 'download');
     });
 
-    test('creates a stream task with a sanitized Matroska file name', () {
+    test('creates a stream task with a sanitized MP4 file name', () {
       final task = DownloadTask.fromUrl(
         'https://cdn.example.com/manifest.m3u8?token=secret',
         '/tmp/Downloads',
@@ -35,7 +35,7 @@ void main() {
         requestHeaders: const {'referer': 'https://site.example/watch'},
       );
 
-      expect(task.fileName, '.._my_video.mkv');
+      expect(task.fileName, '.._my_video.mp4');
       expect(task.isStream, isTrue);
       expect(task.requestHeaders, {'referer': 'https://site.example/watch'});
     });

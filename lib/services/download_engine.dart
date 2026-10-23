@@ -737,8 +737,9 @@ class FfmpegStreamDownloadEngine implements DownloadEngine {
     } on FileSystemException catch (error) {
       throw DownloadException('File error: ${error.message}');
     }
-    final destination = await _availableDestination(directory, task.fileName);
-    final partial = File('${destination.path}.${task.id}.part.mkv');
+    final requestedName = _mp4FileName(task.fileName);
+    final destination = await _availableDestination(directory, requestedName);
+    final partial = File('${destination.path}.${task.id}.part.mp4');
 
     while (true) {
       await control?.waitUntilResumed();
@@ -781,6 +782,10 @@ class FfmpegStreamDownloadEngine implements DownloadEngine {
         '0:a:0?',
         '-c',
         'copy',
+        '-movflags',
+        '+faststart',
+        '-f',
+        'mp4',
         '-progress',
         'pipe:1',
         '-nostats',
@@ -866,6 +871,12 @@ class FfmpegStreamDownloadEngine implements DownloadEngine {
       }
     }
     return executable;
+  }
+
+  String _mp4FileName(String requestedName) {
+    final dot = requestedName.lastIndexOf('.');
+    final stem = dot > 0 ? requestedName.substring(0, dot) : requestedName;
+    return '$stem.mp4';
   }
 
   Future<File> _availableDestination(

@@ -38,7 +38,7 @@ void main() {
   }) {}
 
   test(
-    'runs FFmpeg with the manifest URL, session headers, and stream mapping',
+    'remuxes streams into MP4 with session headers and stream mapping',
     () async {
       List<String>? receivedArguments;
       final engine = FfmpegStreamDownloadEngine(
@@ -51,9 +51,9 @@ void main() {
 
       final result = await engine.download(task(), onProgress: onProgress);
 
-      expect(result.fileName, 'video.mkv');
+      expect(result.fileName, 'video.mp4');
       expect(result.totalBytes, 4);
-      expect(await File('${directory.path}/video.mkv').readAsBytes(), [
+      expect(await File('${directory.path}/video.mp4').readAsBytes(), [
         1,
         2,
         3,
@@ -65,6 +65,9 @@ void main() {
       );
       expect(receivedArguments, contains('0:v:0?'));
       expect(receivedArguments, contains('0:a:0?'));
+      expect(receivedArguments, containsAll(['-movflags', '+faststart']));
+      expect(receivedArguments, containsAll(['-f', 'mp4']));
+      expect(receivedArguments!.last, endsWith('.part.mp4'));
       final cookieIndex = receivedArguments!.indexOf('-cookies');
       expect(
         receivedArguments![cookieIndex + 1],
@@ -81,7 +84,7 @@ void main() {
   test(
     'chooses a numbered destination when the requested name exists',
     () async {
-      await File('${directory.path}/video.mkv').writeAsBytes([9]);
+      await File('${directory.path}/video.mp4').writeAsBytes([9]);
       final engine = FfmpegStreamDownloadEngine(
         processFactory: (executable, arguments) async {
           await File(arguments.last).writeAsBytes([1, 2]);
@@ -91,9 +94,9 @@ void main() {
 
       final result = await engine.download(task(), onProgress: onProgress);
 
-      expect(result.fileName, 'video (1).mkv');
-      expect(await File('${directory.path}/video.mkv').readAsBytes(), [9]);
-      expect(await File('${directory.path}/video (1).mkv').readAsBytes(), [
+      expect(result.fileName, 'video (1).mp4');
+      expect(await File('${directory.path}/video.mp4').readAsBytes(), [9]);
+      expect(await File('${directory.path}/video (1).mp4').readAsBytes(), [
         1,
         2,
       ]);
@@ -137,7 +140,7 @@ void main() {
       ),
     );
     expect(
-      await File('${directory.path}/video.mkv.stream-task.part.mkv').exists(),
+      await File('${directory.path}/video.mp4.stream-task.part.mp4').exists(),
       isFalse,
     );
   });
@@ -182,7 +185,7 @@ void main() {
     await expectLater(download, throwsA(isA<DownloadCanceledException>()));
     expect(process.wasKilled, isTrue);
     expect(
-      await File('${directory.path}/video.mkv.stream-task.part.mkv').exists(),
+      await File('${directory.path}/video.mp4.stream-task.part.mp4').exists(),
       isFalse,
     );
   });

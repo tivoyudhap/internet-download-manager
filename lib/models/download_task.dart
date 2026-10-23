@@ -90,7 +90,7 @@ class DownloadTask {
     if (isStream) {
       final dot = name.lastIndexOf('.');
       if (dot > 0) name = name.substring(0, dot);
-      name = '$name.mkv';
+      name = '$name.mp4';
     }
 
     return DownloadTask(
