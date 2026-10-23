@@ -6,7 +6,12 @@ import vm from 'node:vm';
 const source = await readFile(new URL('./service_worker.js', import.meta.url), 'utf8');
 const contentSource = await readFile(new URL('./content_script.js', import.meta.url), 'utf8');
 
-function loadWorker({ response = { ok: true }, lastError = null, videoSource = null } = {}) {
+function loadWorker({
+  response = { ok: true },
+  lastError = null,
+  videoSource = null,
+  scriptSource = null,
+} = {}) {
   const listeners = { beforeSendHeaders: [], headersReceived: [] };
   const menus = [];
   const nativeMessages = [];
@@ -29,6 +34,13 @@ function loadWorker({ response = { ok: true }, lastError = null, videoSource = n
         if (typeof videoSource === 'function') return videoSource(options);
         if (Array.isArray(videoSource)) return videoSource.shift() || null;
         return videoSource;
+      },
+    },
+    scripting: {
+      executeScript: async ({ target }) => {
+        if (typeof scriptSource === 'function') return scriptSource(target);
+        if (Array.isArray(scriptSource)) return scriptSource.shift() || [];
+        return scriptSource ? [{ result: scriptSource }] : [];
       },
     },
     webRequest: {
@@ -215,6 +227,31 @@ test('falls back to searching all frames when the clicked frame has no source', 
   const message = worker.nativeMessages[0].message;
   assert.equal(message.url, 'https://hls.example.com/master.m3u8?token=other-frame');
   assert.equal(message.isStream, true);
+});
+
+test('reads an extensionless direct MP4 source from all player frames', async () => {
+  const worker = loadWorker({
+    scriptSource: (target) => target.allFrames
+      ? [{
+        result: {
+          url: 'https://mp4-11.example.com/s/id/token',
+          kind: 'media',
+          pageUrl: 'https://example.test/stream.php',
+        },
+      }]
+      : [{ result: null }],
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm',
+    tabId: 16,
+    frameId: 4,
+  });
+
+  const message = worker.nativeMessages[0].message;
+  assert.equal(message.url, 'https://mp4-11.example.com/s/id/token');
+  assert.equal(message.isStream, false);
+  assert.equal(message.headers.referer, 'https://example.test/stream.php');
 });
 
 test('uses a captured direct video response from the page context', async () => {

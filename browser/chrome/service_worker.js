@@ -178,6 +178,26 @@ function mediaStorageKey(tabId) {
 
 async function readVideoSource(tabId, frameId) {
   const message = { type: 'idm_get_video_source' };
+  const clickedFrameTarget =
+    Number.isInteger(frameId) && frameId > 0
+      ? { tabId, frameIds: [frameId] }
+      : { tabId, allFrames: true };
+  const targets = [clickedFrameTarget];
+  if (!clickedFrameTarget.allFrames) targets.push({ tabId, allFrames: true });
+
+  for (const target of targets) {
+    try {
+      const results = await chrome.scripting.executeScript({
+        target,
+        func: findVideoSourceInFrame,
+      });
+      const source = results.map((result) => result.result).find((item) => item?.url);
+      if (source) return source;
+    } catch (_) {
+      // If scripting is unavailable for this page, try the injected content script.
+    }
+  }
+
   if (Number.isInteger(frameId) && frameId > 0) {
     try {
       const source = await chrome.tabs.sendMessage(tabId, message, { frameId });
@@ -194,6 +214,45 @@ async function readVideoSource(tabId, frameId) {
   } catch (_) {
     return null;
   }
+}
+
+function findVideoSourceInFrame() {
+  const videos = [...document.querySelectorAll('video')].sort(
+    (a, b) => Number(a.paused) - Number(b.paused) || b.readyState - a.readyState,
+  );
+  for (const video of videos) {
+    const candidates = [
+      { url: video.currentSrc, type: '' },
+      { url: video.src, type: '' },
+      ...[...video.querySelectorAll('source')].map((source) => ({
+        url: source.src || source.getAttribute('data-src') || '',
+        type: source.type || '',
+      })),
+    ]
+      .filter((source) => source.url)
+      .map((source) => {
+        try {
+          const url = new URL(source.url, location.href);
+          if (!['http:', 'https:', 'blob:'].includes(url.protocol)) return null;
+          return { ...source, url: url.href };
+        } catch (_) {
+          return null;
+        }
+      })
+      .filter(Boolean);
+    const isManifest = (source) =>
+      /\.m3u8$|\.mpd$/i.test(new URL(source.url).pathname) ||
+      /mpegurl|dash\+xml/i.test(source.type || '');
+    const selected = candidates.find(isManifest) || candidates[0];
+    if (selected) {
+      return {
+        url: selected.url,
+        kind: isManifest(selected) ? 'stream' : 'media',
+        pageUrl: location.href,
+      };
+    }
+  }
+  return null;
 }
 
 function rememberStream(request) {
