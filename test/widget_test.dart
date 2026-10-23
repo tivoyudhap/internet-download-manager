@@ -370,6 +370,11 @@ void main() {
 
     expect(find.text('installer.zip'), findsOneWidget);
     expect(find.text('notes.pdf'), findsOneWidget);
+    expect(find.text('All downloads'), findsWidgets);
+    expect(find.text('In progress'), findsOneWidget);
+    expect(find.text('Active downloads'), findsNothing);
+    expect(find.text('Completed today'), findsNothing);
+    expect(find.text('Queue remaining'), findsNothing);
     await tester.tap(find.text('Completed').first);
     await tester.pumpAndSettle();
     expect(find.text('notes.pdf'), findsOneWidget);
