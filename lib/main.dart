@@ -622,6 +622,17 @@ class _SettingsPanel extends StatelessWidget {
                         ],
                       ),
                     ),
+                    const SizedBox(height: 28),
+                    const Center(
+                      child: Text(
+                        'Created by Tivo Yudha',
+                        style: TextStyle(
+                          color: Color(0xFF9AA6B6),
+                          fontSize: 12,
+                          letterSpacing: .3,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
