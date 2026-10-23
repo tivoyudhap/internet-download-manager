@@ -274,14 +274,16 @@ class _DownloadsPageState extends State<DownloadsPage> {
 
   Future<void> _startBrowserBridge() async {
     try {
-      final tokenFile = await _queueStore!.browserBridgeTokenFile();
-      await tokenFile.parent.create(recursive: true);
       final random = Random.secure();
       final token = List<int>.generate(
         32,
         (_) => random.nextInt(256),
       ).map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
-      await tokenFile.writeAsString(token, flush: true);
+      final tokenFiles = await _queueStore!.browserBridgeTokenFiles();
+      for (final tokenFile in tokenFiles) {
+        await tokenFile.parent.create(recursive: true);
+        await tokenFile.writeAsString(token, flush: true);
+      }
       final bridge = await BrowserBridgeServer.start(
         token: token,
         onDownloadRequest: (request) async {

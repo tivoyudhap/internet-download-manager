@@ -72,6 +72,26 @@ class DownloadQueueStore {
     return File(_join(queueFile.parent.path, 'browser_bridge.token'));
   }
 
+  Future<List<File>> browserBridgeTokenFiles() async {
+    final currentTokenFile = await browserBridgeTokenFile();
+    if (!Platform.isMacOS) return [currentTokenFile];
+
+    // The installed native host may still prefer the token location used by
+    // the previous sandboxed macOS app build.
+    final home = (homeDirectory ?? Directory(_homeDirectory())).path;
+    final legacyTokenFile = File(
+      _join(
+        home,
+        'Library/Containers/com.tivoyudha.internetdownloadmanager/Data/Library/Application Support/InternetDownloadManager',
+        'browser_bridge.token',
+      ),
+    );
+    if (legacyTokenFile.path == currentTokenFile.path) {
+      return [currentTokenFile];
+    }
+    return [currentTokenFile, legacyTokenFile];
+  }
+
   Future<File> _queueFile() async {
     final appSupportPath = supportDirectory?.path;
     final appSupportDirectory =

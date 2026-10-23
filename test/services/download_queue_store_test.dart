@@ -129,13 +129,24 @@ void main() {
     },
   );
 
-  test('stores the browser bridge token beside the persisted queue', () async {
+  test('returns current and legacy macOS bridge token paths', () async {
     final tokenFile = await store.browserBridgeTokenFile();
+    final tokenFiles = await store.browserBridgeTokenFiles();
 
     expect(
       tokenFile.path,
       '${temporaryDirectory.path}${Platform.pathSeparator}support${Platform.pathSeparator}InternetDownloadManager${Platform.pathSeparator}browser_bridge.token',
     );
+    expect(tokenFiles.first.path, tokenFile.path);
+    if (Platform.isMacOS) {
+      expect(tokenFiles, hasLength(2));
+      expect(
+        tokenFiles.last.path,
+        '${temporaryDirectory.path}${Platform.pathSeparator}home${Platform.pathSeparator}Library${Platform.pathSeparator}Containers${Platform.pathSeparator}com.tivoyudha.internetdownloadmanager${Platform.pathSeparator}Data${Platform.pathSeparator}Library${Platform.pathSeparator}Application Support${Platform.pathSeparator}InternetDownloadManager${Platform.pathSeparator}browser_bridge.token',
+      );
+    } else {
+      expect(tokenFiles, hasLength(1));
+    }
   });
 
   test('reports malformed persisted JSON instead of returning partial data', () async {
