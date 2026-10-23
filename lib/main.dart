@@ -113,10 +113,42 @@ class _DownloadsPageState extends State<DownloadsPage> {
     if (widget.queueController == null) {
       _queue = DownloadQueueController(_queueStore!);
       unawaited(_startBrowserBridge());
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(_showChromeExtensionNoticeIfNeeded());
+      });
     } else {
       _queue = widget.queueController!;
     }
     _queue.load();
+  }
+
+  Future<void> _showChromeExtensionNoticeIfNeeded() async {
+    final store = _queueStore!;
+    try {
+      if (await store.hasSeenChromeExtensionNotice() || !mounted) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Enable the Chrome extension'),
+          content: const Text(
+            'To send browser downloads to IDM, install the IDM extension in '
+            'Chrome and make sure it is enabled at chrome://extensions. The '
+            'extension is installed separately from this app. Keep IDM open '
+            'while using it.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Got it'),
+            ),
+          ],
+        ),
+      );
+      await store.markChromeExtensionNoticeSeen();
+    } catch (error) {
+      debugPrint('Chrome extension notice could not be shown: $error');
+    }
   }
 
   Future<void> _loadDownloadDirectory() async {

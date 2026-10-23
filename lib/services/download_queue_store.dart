@@ -67,6 +67,21 @@ class DownloadQueueStore {
     await temporaryFile.rename(file.path);
   }
 
+  Future<bool> hasSeenChromeExtensionNotice() async {
+    final queueFile = await _queueFile();
+    return File(_join(queueFile.parent.path, 'chrome_extension_notice_seen'))
+        .exists();
+  }
+
+  Future<void> markChromeExtensionNoticeSeen() async {
+    final queueFile = await _queueFile();
+    final noticeFile = File(
+      _join(queueFile.parent.path, 'chrome_extension_notice_seen'),
+    );
+    await noticeFile.parent.create(recursive: true);
+    await noticeFile.writeAsString('seen', flush: true);
+  }
+
   Future<File> browserBridgeTokenFile() async {
     final queueFile = await _queueFile();
     return File(_join(queueFile.parent.path, 'browser_bridge.token'));
