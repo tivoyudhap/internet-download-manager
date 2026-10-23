@@ -177,13 +177,20 @@ function mediaStorageKey(tabId) {
 }
 
 async function readVideoSource(tabId, frameId) {
+  const message = { type: 'idm_get_video_source' };
+  if (Number.isInteger(frameId) && frameId > 0) {
+    try {
+      const source = await chrome.tabs.sendMessage(tabId, message, { frameId });
+      if (source?.url) return source;
+    } catch (_) {
+      // The clicked frame may not contain the player; search all frames next.
+    }
+  }
+
   try {
-    const options = Number.isInteger(frameId) ? { frameId } : {};
-    return await chrome.tabs.sendMessage(
-      tabId,
-      { type: 'idm_get_video_source' },
-      options,
-    );
+    // With no frameId Chrome sends to every injected frame. Frames without a
+    // video source stay silent, allowing the frame containing the player to reply.
+    return await chrome.tabs.sendMessage(tabId, message);
   } catch (_) {
     return null;
   }

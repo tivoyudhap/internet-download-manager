@@ -25,7 +25,11 @@ function loadWorker({ response = { ok: true }, lastError = null, videoSource = n
       },
     },
     tabs: {
-      sendMessage: async () => videoSource,
+      sendMessage: async (_tabId, _message, options) => {
+        if (typeof videoSource === 'function') return videoSource(options);
+        if (Array.isArray(videoSource)) return videoSource.shift() || null;
+        return videoSource;
+      },
     },
     webRequest: {
       onBeforeSendHeaders: { addListener: (listener) => listeners.beforeSendHeaders.push(listener) },
@@ -191,6 +195,26 @@ test('uses a video source read from the clicked iframe when no request was captu
   assert.equal(message.url, 'https://hls.example.com/master.m3u8?token=frame');
   assert.equal(message.isStream, true);
   assert.equal(message.headers.referer, 'https://example.test/stream.php');
+});
+
+test('falls back to searching all frames when the clicked frame has no source', async () => {
+  const worker = loadWorker({
+    videoSource: [null, {
+      url: 'https://hls.example.com/master.m3u8?token=other-frame',
+      kind: 'stream',
+      pageUrl: 'https://example.test/stream.php',
+    }],
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm',
+    tabId: 15,
+    frameId: 2,
+  });
+
+  const message = worker.nativeMessages[0].message;
+  assert.equal(message.url, 'https://hls.example.com/master.m3u8?token=other-frame');
+  assert.equal(message.isStream, true);
 });
 
 test('uses a captured direct video response from the page context', async () => {

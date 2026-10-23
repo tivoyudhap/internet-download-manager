@@ -1,6 +1,7 @@
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== 'idm_get_video_source') return;
-  sendResponse(findVideoSource());
+  const source = findVideoSource();
+  if (source) sendResponse(source);
 });
 
 function findVideoSource() {
