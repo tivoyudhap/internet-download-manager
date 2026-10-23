@@ -1,0 +1,128 @@
+name: Build desktop release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    name: Build macOS DMG
+    runs-on: macos-14
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build macOS app
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${RELEASE_VERSION#v}"
+          flutter pub get
+          flutter build macos --release \
+            --build-name="$VERSION" \
+            --build-number="$GITHUB_RUN_NUMBER"
+
+      - name: Package DMG
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_VERSION#v}"
+          APP_PATH="build/macos/Build/Products/Release/Internet Download Manager.app"
+          STAGING="build/dmg-staging"
+          OUTPUT="build/release"
+          test -d "$APP_PATH"
+          mkdir -p "$STAGING" "$OUTPUT"
+          cp -R "$APP_PATH" "$STAGING/Internet Download Manager.app"
+          ln -s /Applications "$STAGING/Applications"
+          hdiutil create \
+            -volname "Internet Download Manager $VERSION" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            "$OUTPUT/InternetDownloadManager-macOS-$VERSION.dmg"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: build/release/*.dmg
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows installer
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set up Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows app
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          flutter pub get
+          flutter build windows --release `
+            --build-name=$version `
+            --build-number=$env:GITHUB_RUN_NUMBER
+
+      - name: Package installer
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^v', ''
+          $output = Join-Path $env:GITHUB_WORKSPACE 'build/release'
+          New-Item -ItemType Directory -Force -Path $output | Out-Null
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          & $iscc "/DAppVersion=$version" `
+            "/DBuildDir=$env:GITHUB_WORKSPACE\build\windows\x64\runner\Release" `
+            "/DOutputDir=$output" `
+            'installer/windows/InternetDownloadManager.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: build/release/*.exe
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create release and upload installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Internet Download Manager $RELEASE_TAG" \
+            --generate-notes
+          find release-assets -type f \( -name '*.dmg' -o -name '*.exe' \) -print0 \
+            | xargs -0 -r gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY"

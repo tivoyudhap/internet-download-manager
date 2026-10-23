@@ -17,6 +17,18 @@ flutter run -d macos
 
 On Windows, use `flutter run -d windows`. Build release versions with `flutter build macos` or `flutter build windows` on the matching operating system.
 
+## GitHub releases
+
+The app version is defined in `pubspec.yaml`. Pushing a version tag such as
+`v1.0.0` starts the GitHub Actions release workflow. It builds a macOS `.dmg`
+and a Windows setup `.exe`, then attaches both files to a GitHub Release for
+that tag. The Windows `.exe` is an installer that includes the complete Flutter
+app bundle and installs it for the current user.
+
+The first-party release packages are unsigned. macOS Gatekeeper or Windows
+SmartScreen may show an unidentified developer warning; code signing and
+notarization require developer credentials configured in GitHub Actions.
+
 Closing the main window keeps the app running in the macOS menu bar or Windows
 system tray. Use **Buka Internet Download Manager** to restore it, or **Keluar**
 to stop the app and its active downloads.
