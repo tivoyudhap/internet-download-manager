@@ -23,6 +23,7 @@ function loadWorker({
       lastError: null,
       getManifest: () => ({ version: '1.0.1' }),
       onInstalled: { addListener: (listener) => { listeners.installed = listener; } },
+      onMessage: { addListener: (listener) => { listeners.runtimeMessage = listener; } },
       sendNativeMessage: (host, message, callback) => {
         nativeMessages.push({ host, message });
         chrome.runtime.lastError = lastError;
@@ -70,18 +71,57 @@ function loadWorker({
 
 function loadContentScript(video, pageUrl) {
   let listener;
+  let button;
+  let host;
+  const makeElement = (tagName) => ({
+    tagName,
+    style: {},
+    children: [],
+    append(...children) { this.children.push(...children); },
+    addEventListener(type, callback) {
+      if (type === 'click') buttonClick = callback;
+    },
+    attachShadow() {
+      return { append: (...children) => this.children.push(...children) };
+    },
+  });
+  let buttonClick;
+  const root = {
+    append(element) { host = element; },
+  };
+  const timers = [];
   const chrome = {
     runtime: {
       onMessage: { addListener: (callback) => { listener = callback; } },
+      sendMessage: (message, callback) => {
+        sentMessages.push(message);
+        callback({ ok: true });
+      },
+      lastError: null,
     },
   };
+  const sentMessages = [];
+  const window = { addEventListener() {} };
   vm.runInNewContext(contentSource, {
     chrome,
-    document: { querySelectorAll: () => [video] },
+    document: {
+      querySelector: () => video,
+      querySelectorAll: () => [video],
+      getElementById: () => host || null,
+      createElement: (tagName) => {
+        const element = makeElement(tagName);
+        if (tagName === 'button') button = element;
+        return element;
+      },
+      documentElement: root,
+    },
+    MutationObserver: class { observe() {} },
+    window,
     location: { href: pageUrl },
     URL,
+    setTimeout: (callback) => timers.push(callback),
   });
-  return listener;
+  return { listener, button, host, buttonClick, sentMessages, timers };
 }
 
 test('registers Download with IDM for links, media elements, and page contexts', () => {
@@ -95,9 +135,10 @@ test('registers Download with IDM for links, media elements, and page contexts',
 });
 
 test('finds a manifest source inside a video element even before playback', () => {
-  const listener = loadContentScript({
+  const { listener } = loadContentScript({
     paused: true,
     readyState: 0,
+    getBoundingClientRect: () => ({ top: 100, right: 700, width: 640, height: 360 }),
     currentSrc: 'blob:https://example.test/video',
     src: '',
     querySelectorAll: () => [{
@@ -115,6 +156,90 @@ test('finds a manifest source inside a video element even before playback', () =
     kind: 'stream',
     pageUrl: 'https://example.test/stream.php',
   });
+});
+
+test('places a floating IDM button over a visible video and sends its source', () => {
+  const { button, host, buttonClick, sentMessages } = loadContentScript({
+    paused: true,
+    readyState: 0,
+    currentSrc: 'https://cdn.example.com/movie',
+    src: '',
+    getBoundingClientRect: () => ({ top: 100, right: 700, width: 640, height: 360 }),
+    querySelectorAll: () => [],
+  }, 'https://example.test/stream.php');
+
+  assert.equal(button.textContent, '↓  Download with IDM');
+  assert.equal(host.style.top, '112px');
+  assert.equal(host.style.left, '506px');
+  buttonClick({ preventDefault() {}, stopPropagation() {} });
+  assert.equal(sentMessages[0].type, 'idm_download_video');
+  assert.equal(sentMessages[0].source.url, 'https://cdn.example.com/movie');
+});
+
+test('sends an extensionless source from the floating button as a direct download', async () => {
+  const worker = loadWorker();
+  let response;
+
+  const keepChannelOpen = worker.listeners.runtimeMessage({
+    type: 'idm_download_video',
+    source: {
+      url: 'https://mp4-11.example.com/s/video/token',
+      kind: 'media',
+      pageUrl: 'https://example.test/stream.php',
+    },
+  }, { tab: { id: 24 } }, (value) => { response = value; });
+
+  assert.equal(keepChannelOpen, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(JSON.stringify(worker.nativeMessages[0].message)), {
+    type: 'add_download',
+    url: 'https://mp4-11.example.com/s/video/token',
+    isStream: false,
+    headers: { referer: 'https://example.test/stream.php' },
+  });
+  assert.equal(response.ok, true);
+});
+
+test('uses captured request headers when a floating button sends a manifest', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-floating-hls', tabId: 25, type: 'media',
+    url: 'https://cdn.example.com/master.m3u8?token=player',
+    initiator: 'https://example.test/stream.php',
+    requestHeaders: [{ name: 'Cookie', value: 'session=player' }],
+  });
+  let response;
+
+  worker.listeners.runtimeMessage({
+    type: 'idm_download_video',
+    source: {
+      url: 'https://cdn.example.com/master.m3u8?token=player',
+      kind: 'stream',
+      pageUrl: 'https://example.test/stream.php',
+    },
+  }, { tab: { id: 25 } }, (value) => { response = value; });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(worker.nativeMessages[0].message.isStream, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(worker.nativeMessages[0].message.headers)), {
+    cookie: 'session=player',
+    referer: 'https://example.test/stream.php',
+  });
+  assert.equal(response.ok, true);
+});
+
+test('returns a visible error for missing or unsupported floating video sources', async () => {
+  for (const source of [null, { url: 'blob:https://site.example/video', kind: 'media' }]) {
+    const worker = loadWorker();
+    let response;
+    worker.listeners.runtimeMessage({ type: 'idm_download_video', source }, { tab: { id: 26 } }, (value) => {
+      response = value;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(worker.nativeMessages.length, 0);
+    assert.equal(response.ok, false);
+    assert.match(response.error, /no video source found/);
+  }
 });
 
 test('sends a direct link as a regular download', async () => {

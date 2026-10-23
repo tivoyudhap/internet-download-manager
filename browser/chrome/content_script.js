@@ -1,8 +1,96 @@
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type !== 'idm_get_video_source') return;
-  const source = findVideoSource();
-  if (source) sendResponse(source);
+  if (message?.type === 'idm_get_video_source') {
+    const source = findVideoSource();
+    if (source) sendResponse(source);
+  }
 });
+
+const FLOATING_HOST_ID = 'idm-floating-download-host';
+
+function installFloatingButton() {
+  if (!document.querySelector('video') || document.getElementById(FLOATING_HOST_ID)) {
+    return;
+  }
+
+  const host = document.createElement('div');
+  host.id = FLOATING_HOST_ID;
+  host.style.cssText =
+    'all:initial;position:fixed;z-index:2147483647;pointer-events:none;';
+  const shadow = host.attachShadow({ mode: 'closed' });
+  const style = document.createElement('style');
+  style.textContent = `
+    button {
+      all: initial;
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 38px;
+      padding: 0 14px;
+      border: 1px solid rgba(255,255,255,.24);
+      border-radius: 10px;
+      background: #1769aa;
+      box-shadow: 0 3px 14px rgba(0,0,0,.38);
+      color: #fff;
+      cursor: pointer;
+      font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      pointer-events: auto;
+      transition: background .15s ease, opacity .15s ease;
+    }
+    button:hover:not(:disabled) { background: #0f5590; }
+    button:disabled { cursor: wait; opacity: .72; }
+    button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  `;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = '↓  Download with IDM';
+  button.title = 'Send this video to Internet Download Manager';
+  shadow.append(style, button);
+  document.documentElement.append(host);
+
+  const positionButton = () => {
+    const video = [...document.querySelectorAll('video')].find((item) => {
+      const rect = item.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    });
+    if (!video) {
+      host.style.display = 'none';
+      return;
+    }
+    const rect = video.getBoundingClientRect();
+    host.style.display = '';
+    host.style.top = `${Math.max(8, rect.top + 12)}px`;
+    host.style.left = `${Math.max(8, rect.right - 194)}px`;
+  };
+  host.__idmPosition = positionButton;
+  positionButton();
+  window.addEventListener('resize', positionButton);
+  window.addEventListener('scroll', positionButton, true);
+
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const source = findVideoSource();
+    if (!source) {
+      button.textContent = 'Video source not found';
+      return;
+    }
+    button.disabled = true;
+    button.textContent = 'Sending to IDM…';
+    chrome.runtime.sendMessage(
+      { type: 'idm_download_video', source },
+      (response) => {
+        const error = chrome.runtime.lastError?.message || response?.error;
+        button.textContent = error ? 'Could not send to IDM' : 'Added to IDM ✓';
+        button.title = error || 'Download added to IDM.';
+        setTimeout(() => {
+          button.disabled = false;
+          button.textContent = '↓  Download with IDM';
+        }, 2500);
+      },
+    );
+  });
+}
 
 function findVideoSource() {
   const videos = [...document.querySelectorAll('video')].sort(
@@ -50,3 +138,14 @@ function isManifestSource(source) {
   if (/\.m3u8$|\.mpd$/i.test(new URL(source.url).pathname)) return true;
   return /mpegurl|dash\+xml/i.test(source.type || '');
 }
+
+installFloatingButton();
+new MutationObserver(() => {
+  installFloatingButton();
+  document.getElementById(FLOATING_HOST_ID)?.__idmPosition?.();
+}).observe(document.documentElement, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ['class', 'height', 'src', 'style', 'width'],
+});

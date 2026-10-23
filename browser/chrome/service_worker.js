@@ -132,22 +132,83 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
     return;
   }
 
-  chrome.runtime.sendNativeMessage(
-    NATIVE_HOST,
-    { type: 'add_download', url, isStream, headers },
-    (response) => {
-      if (chrome.runtime.lastError) {
-        setStatus('!', 'Could not connect to IDM. Open the desktop app.');
-        return;
-      }
-      if (!response || response.ok !== true) {
-        setStatus('!', response?.error || 'Could not add the download.');
-        return;
-      }
-      setStatus('✓', 'Download added to IDM.');
-    },
-  );
+  await sendNativeDownload(url, isStream, headers);
 });
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type !== 'idm_download_video') return;
+  handleFloatingVideoDownload(message.source, sender.tab?.id)
+    .then(sendResponse)
+    .catch((error) => sendResponse({ ok: false, error: String(error) }));
+  return true;
+});
+
+async function handleFloatingVideoDownload(source, tabId) {
+  let rawUrl = source?.url;
+  let isStream = source?.kind === 'stream' || isStreamManifest(rawUrl);
+  let headers = {};
+  if (Number.isInteger(tabId) && tabId >= 0) {
+    const [storedStream, storedMedia] = await Promise.all([
+      chrome.storage.session.get(streamStorageKey(tabId)),
+      chrome.storage.session.get(mediaStorageKey(tabId)),
+    ]);
+    const candidates = [storedStream[streamStorageKey(tabId)], storedMedia[mediaStorageKey(tabId)]];
+    const isRecent = (item) =>
+      item && Date.now() - item.observedAt <= MAX_STREAM_AGE_MS;
+    const captured = candidates.find((item) => isRecent(item) && item.url === rawUrl);
+    if (captured) {
+      headers = { ...(captured.headers || {}) };
+      isStream = captured.kind === 'stream';
+    } else if (!rawUrl || rawUrl.startsWith('blob:')) {
+      const latest = candidates
+        .filter(isRecent)
+        .sort((a, b) => b.observedAt - a.observedAt)[0];
+      if (latest) {
+        rawUrl = latest.url;
+        isStream = latest.kind === 'stream';
+        headers = { ...(latest.headers || {}) };
+      }
+    }
+  }
+  if (source?.pageUrl && !headers.referer) headers.referer = source.pageUrl;
+  if (!rawUrl || rawUrl.startsWith('blob:')) {
+    const error = `IDM ${chrome.runtime.getManifest().version}: no video source found.`;
+    setStatus('!', error);
+    return { ok: false, error };
+  }
+  const url = normalizeDownloadUrl(rawUrl);
+  if (!url) {
+    const error = 'Only HTTP and HTTPS video sources can be sent to IDM.';
+    setStatus('!', error);
+    return { ok: false, error };
+  }
+  return sendNativeDownload(url, isStream, headers);
+}
+
+function sendNativeDownload(url, isStream, headers) {
+  return new Promise((resolve) => {
+    chrome.runtime.sendNativeMessage(
+      NATIVE_HOST,
+      { type: 'add_download', url, isStream, headers },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          const error = 'Could not connect to IDM. Open the desktop app.';
+          setStatus('!', error);
+          resolve({ ok: false, error });
+          return;
+        }
+        if (!response || response.ok !== true) {
+          const error = response?.error || 'Could not add the download.';
+          setStatus('!', error);
+          resolve({ ok: false, error });
+          return;
+        }
+        setStatus('✓', 'Download added to IDM.');
+        resolve(response);
+      },
+    );
+  });
+}
 
 function normalizeDownloadUrl(value) {
   if (typeof value !== 'string') return null;
