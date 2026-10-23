@@ -53,7 +53,7 @@ test('registers Download with IDM for links and video/audio elements', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(worker.menus)), [{
     id: 'idm-download-with-idm',
     title: 'Download with IDM',
-    contexts: ['link', 'video', 'audio'],
+    contexts: ['link', 'video', 'audio', 'page'],
   }]);
 });
 
@@ -108,6 +108,82 @@ test('uses the captured stream manifest and selected headers for a blob video', 
     cookie: 'session=secret',
     referer: 'https://site.example/watch/42',
   });
+});
+
+test('uses the most recently captured HLS manifest from the page context', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-page-hls', tabId: 10, type: 'media',
+    url: 'https://cdn.example.com/master.m3u8?sig=page-token',
+    initiator: 'https://site.example/watch',
+    requestHeaders: [{ name: 'Referer', value: 'https://site.example/watch' }],
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm',
+    tabId: 10,
+  });
+
+  assert.equal(worker.nativeMessages[0].message.url, 'https://cdn.example.com/master.m3u8?sig=page-token');
+  assert.equal(worker.nativeMessages[0].message.isStream, true);
+  assert.equal(worker.nativeMessages[0].message.headers.referer, 'https://site.example/watch');
+});
+
+test('uses a captured direct video response from the page context', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-page-mp4', tabId: 11, type: 'media',
+    url: 'https://cdn.example.com/play?id=movie',
+    initiator: 'https://site.example/watch',
+    requestHeaders: [{ name: 'Cookie', value: 'session=video' }],
+  });
+  worker.listeners.headersReceived[0]({
+    requestId: 'r-page-mp4', tabId: 11,
+    responseHeaders: [{ name: 'content-type', value: 'video/mp4' }],
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm',
+    tabId: 11,
+  });
+
+  assert.equal(worker.nativeMessages[0].message.url, 'https://cdn.example.com/play?id=movie');
+  assert.equal(worker.nativeMessages[0].message.isStream, false);
+  assert.equal(worker.nativeMessages[0].message.headers.cookie, 'session=video');
+});
+
+test('does not treat a segmented video chunk as a complete page video', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-segment', tabId: 13, type: 'media',
+    url: 'https://cdn.example.com/segment.mp4',
+    initiator: 'https://site.example/watch',
+    requestHeaders: [],
+  });
+  worker.listeners.headersReceived[0]({
+    requestId: 'r-segment', tabId: 13,
+    responseHeaders: [{ name: 'content-type', value: 'video/iso.segment' }],
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm',
+    tabId: 13,
+  });
+
+  assert.equal(worker.nativeMessages.length, 0);
+  assert.equal(worker.titles.at(-1), 'No video stream found. Start playback, then try again.');
+});
+
+test('asks the user to start playback when the page has no captured video', async () => {
+  const worker = loadWorker();
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm',
+    tabId: 12,
+  });
+
+  assert.equal(worker.nativeMessages.length, 0);
+  assert.equal(worker.titles.at(-1), 'No video stream found. Start playback, then try again.');
 });
 
 test('recognizes extensionless manifests by HLS or DASH response MIME type', async () => {
