@@ -6,6 +6,10 @@ const MEDIA_KEY_PREFIX = 'last-media-';
 const MAX_STREAM_AGE_MS = 30 * 60 * 1000;
 const pendingRequests = new Map();
 
+chrome.downloads.onCreated.addListener((item) => {
+  void forwardBrowserDownload(item);
+});
+
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
     if (details.tabId < 0) return;
@@ -256,10 +260,11 @@ async function handleFloatingVideoDownload(source, tabId, senderPageUrl) {
   return sendNativeDownload(url, isStream, headers, audioUrl);
 }
 
-function sendNativeDownload(url, isStream, headers, audioUrl) {
+function sendNativeDownload(url, isStream, headers, audioUrl, fileName) {
   return new Promise((resolve) => {
     const message = { type: 'add_download', url, isStream, headers };
     if (audioUrl) message.audioUrl = audioUrl;
+    if (fileName) message.fileName = fileName;
     chrome.runtime.sendNativeMessage(
       NATIVE_HOST,
       message,
@@ -281,6 +286,60 @@ function sendNativeDownload(url, isStream, headers, audioUrl) {
       },
     );
   });
+}
+
+async function forwardBrowserDownload(item) {
+  if (
+    item?.state !== 'in_progress' ||
+    item.incognito ||
+    item.byExtensionId
+  ) return;
+  const initialUrl = normalizeDownloadUrl(item.finalUrl || item.url);
+  if (!initialUrl) return;
+
+  try {
+    await chrome.downloads.pause(item.id);
+  } catch (_) {
+    // If Chrome cannot pause the item, leave its normal download alone.
+    return;
+  }
+
+  try {
+    const currentItems = await chrome.downloads.search({ id: item.id });
+    const current = currentItems[0] || item;
+    const url = normalizeDownloadUrl(current.finalUrl) ||
+      normalizeDownloadUrl(current.url) || initialUrl;
+    const headers = {};
+    if (current.referrer || item.referrer) {
+      headers.referer = current.referrer || item.referrer;
+    }
+
+    try {
+      const cookies = await chrome.cookies.getAll({ url });
+      if (cookies.length) {
+        headers.cookie = cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ');
+      }
+    } catch (_) {
+      // A public download can still proceed without browser cookies.
+    }
+
+    const fileName = (current.filename || item.filename || '')
+      .split(/[\\/]/)
+      .pop();
+    const response = await sendNativeDownload(url, false, headers, undefined, fileName);
+    if (response?.ok) {
+      await chrome.downloads.cancel(item.id);
+      return;
+    }
+  } catch (_) {
+    // Resume the browser download if IDM could not take ownership.
+  }
+
+  try {
+    await chrome.downloads.resume(item.id);
+  } catch (_) {
+    // The item may have completed or been cancelled while it was paused.
+  }
 }
 
 function normalizeDownloadUrl(value) {

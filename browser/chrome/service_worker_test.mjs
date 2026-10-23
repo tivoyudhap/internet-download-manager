@@ -11,6 +11,9 @@ function loadWorker({
   lastError = null,
   videoSource = null,
   scriptSource = null,
+  downloadItem = null,
+  downloadPauseError = null,
+  cookies = [],
 } = {}) {
   const listeners = { beforeSendHeaders: [], headersReceived: [] };
   const menus = [];
@@ -18,6 +21,8 @@ function loadWorker({
   const badges = [];
   const titles = [];
   const session = {};
+  const downloadOperations = [];
+  const browserDownload = downloadItem || {};
   const chrome = {
     runtime: {
       lastError: null,
@@ -49,6 +54,20 @@ function loadWorker({
       onBeforeSendHeaders: { addListener: (listener) => listeners.beforeSendHeaders.push(listener) },
       onHeadersReceived: { addListener: (listener) => listeners.headersReceived.push(listener) },
     },
+    downloads: {
+      onCreated: { addListener: (listener) => { listeners.downloadCreated = listener; } },
+      pause: async (id) => {
+        downloadOperations.push(['pause', id]);
+        if (downloadPauseError) throw downloadPauseError;
+      },
+      cancel: async (id) => downloadOperations.push(['cancel', id]),
+      resume: async (id) => downloadOperations.push(['resume', id]),
+      search: async () => [browserDownload],
+    },
+    cookies: { getAll: async ({ url }) => {
+      downloadOperations.push(['cookies', url]);
+      return cookies;
+    } },
     storage: {
       session: {
         set: async (values) => Object.assign(session, values),
@@ -66,7 +85,10 @@ function loadWorker({
     },
   };
   vm.runInNewContext(source, { chrome, URL, Date, setTimeout: () => 0 });
-  return { chrome, listeners, menus, nativeMessages, badges, titles, session };
+  return {
+    chrome, listeners, menus, nativeMessages, badges, titles, session,
+    downloadOperations,
+  };
 }
 
 function loadContentScript(video, pageUrl) {
@@ -117,7 +139,7 @@ function loadContentScript(video, pageUrl) {
     },
     MutationObserver: class { observe() {} },
     window,
-    location: { href: pageUrl },
+    location: { href: pageUrl, hostname: new URL(pageUrl).hostname },
     URL,
     setTimeout: (callback) => timers.push(callback),
   });
@@ -570,4 +592,81 @@ test('shows an error when the desktop app or native host rejects a request', asy
   await hostError.listeners.clicked({ menuItemId: 'idm-download-with-idm', linkUrl: 'https://example.com/file.zip' });
   assert.equal(hostError.badges.at(-1), '!');
   assert.equal(hostError.titles.at(-1), 'Could not connect to IDM. Open the desktop app.');
+});
+
+test('forwards regular browser downloads to IDM with cookies and resumes on rejection', async () => {
+  const item = {
+    id: 91,
+    state: 'in_progress',
+    url: 'https://drive.google.com/uc?export=download&id=abc',
+    finalUrl: 'https://drive.usercontent.google.com/download?id=abc',
+    referrer: 'https://drive.google.com/file/d/abc/view',
+    filename: '/Users/test/Downloads/report.pdf',
+    tabId: 8,
+  };
+  const cookieList = [
+    { name: 'SID', value: 'session-token' },
+    { name: 'HSID', value: 'account-token' },
+  ];
+  const worker = loadWorker({ downloadItem: item, cookies: cookieList });
+
+  worker.listeners.downloadCreated(item);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(worker.downloadOperations.slice(0, 2), [
+    ['pause', 91],
+    ['cookies', 'https://drive.usercontent.google.com/download?id=abc'],
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(worker.nativeMessages[0].message)), {
+    type: 'add_download',
+    url: 'https://drive.usercontent.google.com/download?id=abc',
+    isStream: false,
+    headers: {
+      referer: 'https://drive.google.com/file/d/abc/view',
+      cookie: 'SID=session-token; HSID=account-token',
+    },
+    fileName: 'report.pdf',
+  });
+  assert.deepEqual(worker.downloadOperations.at(-1), ['cancel', 91]);
+});
+
+test('resumes the browser download if IDM rejects it or Chrome cannot pause it', async () => {
+  const item = {
+    id: 92,
+    state: 'in_progress',
+    url: 'https://example.com/archive.zip',
+    filename: '/Downloads/archive.zip',
+  };
+  const rejected = loadWorker({ response: { ok: false, error: 'IDM is closed.' }, downloadItem: item });
+  rejected.listeners.downloadCreated(item);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(rejected.downloadOperations.at(-1), ['resume', 92]);
+  assert.equal(rejected.downloadOperations.some(([operation]) => operation === 'cancel'), false);
+
+  const unpausable = loadWorker({ downloadItem: item, downloadPauseError: new Error('not active') });
+  unpausable.listeners.downloadCreated(item);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(unpausable.nativeMessages.length, 0);
+  assert.deepEqual(unpausable.downloadOperations, [['pause', 92]]);
+});
+
+test('does not intercept extension, incognito, completed, or non-HTTP downloads', async () => {
+  const base = {
+    id: 93,
+    state: 'in_progress',
+    url: 'https://example.com/archive.zip',
+    filename: '/Downloads/archive.zip',
+  };
+  for (const item of [
+    { ...base, byExtensionId: 'another-extension' },
+    { ...base, incognito: true },
+    { ...base, state: 'complete' },
+    { ...base, url: 'blob:https://example.com/archive' },
+  ]) {
+    const worker = loadWorker({ downloadItem: item });
+    worker.listeners.downloadCreated(item);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(worker.nativeMessages.length, 0);
+    assert.equal(worker.downloadOperations.length, 0);
+  }
 });
