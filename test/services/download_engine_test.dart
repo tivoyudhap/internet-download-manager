@@ -60,12 +60,123 @@ void main() {
     expect(progress.last, payload.length);
   });
 
+  test('adds a matching extension from the response content type', () async {
+    final payload = [1, 2, 3, 4];
+    server.listen((request) async {
+      request.response.headers.contentType = ContentType('video', 'mp4');
+      request.response.add(payload);
+      await request.response.close();
+    });
+
+    final result = await HttpDownloadEngine().download(
+      task('jw-player-token'),
+      onProgress: ({
+        required receivedBytes,
+        required totalBytes,
+        required bytesPerSecond,
+      }) {},
+    );
+
+    expect(result.fileName, 'jw-player-token.mp4');
+    expect(
+      await File('${temporaryDirectory.path}/jw-player-token.mp4')
+          .readAsBytes(),
+      payload,
+    );
+    expect(
+      await File('${temporaryDirectory.path}/jw-player-token').exists(),
+      isFalse,
+    );
+  });
+
+  test(
+    'uses a safe filename from Content-Disposition before MIME fallback',
+    () async {
+      server.listen((request) async {
+        request.response.headers.set(
+          'content-disposition',
+          "attachment; filename*=UTF-8''..%2Fmy%20video.webm",
+        );
+        request.response.headers.contentType = ContentType('video', 'mp4');
+        request.response.add([1, 2, 3]);
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        task('opaque-token'),
+        onProgress: ({
+          required receivedBytes,
+          required totalBytes,
+          required bytesPerSecond,
+        }) {},
+      );
+
+      expect(result.fileName, 'my video.webm');
+      expect(
+        await File('${temporaryDirectory.path}/my video.webm').exists(),
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'keeps URL extensions and leaves unknown binary types unchanged',
+    () async {
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType.binary;
+        request.response.add([1, 2, 3]);
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        task('already-named.bin'),
+        onProgress: ({
+          required receivedBytes,
+          required totalBytes,
+          required bytesPerSecond,
+        }) {},
+      );
+
+      expect(result.fileName, 'already-named.bin');
+    },
+  );
+
+  test(
+    'adds inferred extensions after existing files without overwriting them',
+    () async {
+      final existing = File('${temporaryDirectory.path}/movie.mp4');
+      await existing.writeAsBytes([9]);
+      server.listen((request) async {
+        request.response.headers.contentType = ContentType('video', 'mp4');
+        request.response.add([1, 2, 3]);
+        await request.response.close();
+      });
+
+      final result = await HttpDownloadEngine().download(
+        task('movie'),
+        onProgress: ({
+          required receivedBytes,
+          required totalBytes,
+          required bytesPerSecond,
+        }) {},
+      );
+
+      expect(result.fileName, 'movie (1).mp4');
+      expect(await existing.readAsBytes(), [9]);
+      expect(
+        await File('${temporaryDirectory.path}/movie (1).mp4').readAsBytes(),
+        [1, 2, 3],
+      );
+    },
+  );
+
   test(
     'downloads a range-capable large file using parallel segments',
     () async {
       final payload = List<int>.generate(128 * 1024, (index) => index % 251);
       var segmentRequests = 0;
       server.listen((request) async {
+        request.response.headers.contentType = ContentType('video', 'mp4');
         final requestedRange = request.headers.value(HttpHeaders.rangeHeader)!;
         if (requestedRange == 'bytes=0-0') {
           request.response.statusCode = HttpStatus.partialContent;
@@ -96,7 +207,7 @@ void main() {
             segmentCount: 4,
             minimumSegmentedSize: 1,
           ).download(
-            task('segmented.bin'),
+            task('segmented-opaque'),
             onProgress:
                 ({
                   required receivedBytes,
@@ -109,9 +220,11 @@ void main() {
           );
 
       expect(result.totalBytes, payload.length);
+      expect(result.fileName, 'segmented-opaque.mp4');
       expect(segmentRequests, 4);
       expect(
-        await File('${temporaryDirectory.path}/segmented.bin').readAsBytes(),
+        await File('${temporaryDirectory.path}/segmented-opaque.mp4')
+            .readAsBytes(),
         payload,
       );
       expect(progress.last, payload.length);
@@ -1140,15 +1253,16 @@ void main() {
   );
 
   test(
-    'finalizes a partial file when the server reports it is already complete',
+    'recovers an extensionless completed partial using its response type',
     () async {
-      final download = task('already-complete.bin');
+      final download = task('already-complete');
       final partial = File(
-        '${temporaryDirectory.path}/already-complete.bin.${download.id}.part',
+        '${temporaryDirectory.path}/already-complete.${download.id}.part',
       );
       await partial.writeAsBytes([1, 2, 3]);
       server.listen((request) async {
         request.response.statusCode = HttpStatus.requestedRangeNotSatisfiable;
+        request.response.headers.contentType = ContentType('video', 'mp4');
         request.response.headers.set(
           HttpHeaders.contentRangeHeader,
           'bytes */3',
@@ -1163,10 +1277,11 @@ void main() {
 
       expect(result.totalBytes, 3);
       expect(
-        await File('${temporaryDirectory.path}/already-complete.bin')
+        await File('${temporaryDirectory.path}/already-complete.mp4')
             .readAsBytes(),
         [1, 2, 3],
       );
+      expect(partial.existsSync(), isFalse);
     },
   );
 

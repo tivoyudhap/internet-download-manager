@@ -165,7 +165,7 @@ class HttpDownloadEngine implements DownloadEngine {
             probeRange.total! >= minimumSegmentedSize &&
             probeRange.total! >= 2 &&
             probeBytes == 1) {
-          return await _downloadSegments(
+          final result = await _downloadSegments(
             client: client,
             uri: uri,
             destination: destination,
@@ -175,6 +175,12 @@ class HttpDownloadEngine implements DownloadEngine {
             requestHeaders: task.requestHeaders,
             onProgress: onProgress,
             control: control,
+          );
+          return await _applyResponseFileName(
+            result,
+            destinationDirectory,
+            task.fileName,
+            response,
           );
         }
         // Small or malformed probe response: fetch the complete object using
@@ -199,9 +205,15 @@ class HttpDownloadEngine implements DownloadEngine {
             totalBytes: existingBytes,
             bytesPerSecond: 0,
           );
-          return DownloadResult(
+          final result = DownloadResult(
             fileName: destination.path.split(Platform.pathSeparator).last,
             totalBytes: existingBytes,
+          );
+          return await _applyResponseFileName(
+            result,
+            destinationDirectory,
+            task.fileName,
+            response,
           );
         }
       }
@@ -289,9 +301,15 @@ class HttpDownloadEngine implements DownloadEngine {
             ? 0
             : finalSize * 1000000 / stopwatch.elapsed.inMicroseconds,
       );
-      return DownloadResult(
+      final result = DownloadResult(
         fileName: destination.path.split(Platform.pathSeparator).last,
         totalBytes: finalSize,
+      );
+      return await _applyResponseFileName(
+        result,
+        destinationDirectory,
+        task.fileName,
+        response,
       );
     } on DownloadException {
       rethrow;
@@ -317,6 +335,117 @@ class HttpDownloadEngine implements DownloadEngine {
       }
       client.close(force: true);
     }
+  }
+
+  Future<DownloadResult> _applyResponseFileName(
+    DownloadResult result,
+    Directory directory,
+    String requestedName,
+    HttpClientResponse response,
+  ) async {
+    final resolvedName = _responseFileName(requestedName, response);
+    if (resolvedName == result.fileName || resolvedName == requestedName) {
+      return result;
+    }
+
+    final currentFile = File(_join(directory.path, result.fileName));
+    final destination = await _availableDestination(directory, resolvedName);
+    await currentFile.rename(destination.path);
+    return DownloadResult(
+      fileName: destination.path.split(Platform.pathSeparator).last,
+      totalBytes: result.totalBytes,
+    );
+  }
+
+  String _responseFileName(String requestedName, HttpClientResponse response) {
+    if (_hasFileExtension(requestedName)) return requestedName;
+
+    final disposition = response.headers.value('content-disposition');
+    final suggestedName = _contentDispositionFileName(disposition);
+    var name = suggestedName == null
+        ? requestedName
+        : _safeFileName(suggestedName);
+    if (_hasFileExtension(name)) return name;
+
+    final contentType = response.headers.value(HttpHeaders.contentTypeHeader);
+    final extension = _extensionForContentType(contentType);
+    return extension == null ? name : '$name.$extension';
+  }
+
+  String? _contentDispositionFileName(String? header) {
+    if (header == null) return null;
+    final extended = RegExp(
+      r"(?:^|;)\s*filename\*\s*=\s*([^']*)''([^;]+)",
+      caseSensitive: false,
+    ).firstMatch(header);
+    if (extended != null) {
+      final encoded = extended.group(2)!.trim().replaceAll('"', '');
+      try {
+        return Uri.decodeComponent(encoded);
+      } on FormatException {
+        // Fall back to the regular filename parameter.
+      }
+    }
+
+    final regular = RegExp(
+      r'(?:^|;)\s*filename\s*=\s*(?:"((?:\\.|[^"])*)"|([^;]+))',
+      caseSensitive: false,
+    ).firstMatch(header);
+    if (regular == null) return null;
+    return (regular.group(1) ?? regular.group(2))
+        ?.replaceAll(r'\"', '"')
+        .replaceAll(r'\\', r'\')
+        .trim();
+  }
+
+  String? _extensionForContentType(String? value) {
+    final mimeType = value?.split(';').first.trim().toLowerCase();
+    const extensions = <String, String>{
+      'application/pdf': 'pdf',
+      'application/zip': 'zip',
+      'application/x-7z-compressed': '7z',
+      'application/x-rar-compressed': 'rar',
+      'application/gzip': 'gz',
+      'application/json': 'json',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+          'docx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+          'xlsx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+          'pptx',
+      'audio/mpeg': 'mp3',
+      'audio/mp4': 'm4a',
+      'audio/ogg': 'ogg',
+      'audio/wav': 'wav',
+      'image/gif': 'gif',
+      'image/jpeg': 'jpg',
+      'image/png': 'png',
+      'image/svg+xml': 'svg',
+      'image/webp': 'webp',
+      'text/csv': 'csv',
+      'text/html': 'html',
+      'text/plain': 'txt',
+      'video/mp2t': 'ts',
+      'video/mp4': 'mp4',
+      'video/mpeg': 'mpg',
+      'video/ogg': 'ogv',
+      'video/quicktime': 'mov',
+      'video/webm': 'webm',
+      'video/x-matroska': 'mkv',
+      'video/x-msvideo': 'avi',
+    };
+    return mimeType == null ? null : extensions[mimeType];
+  }
+
+  bool _hasFileExtension(String name) {
+    final dot = name.lastIndexOf('.');
+    return dot > 0 && dot < name.length - 1;
+  }
+
+  String _safeFileName(String value) {
+    final leaf = value.replaceAll('\\', '/').split('/').last;
+    final safe = leaf.replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '_').trim();
+    return safe.isEmpty || safe == '.' || safe == '..' ? 'download' : safe;
   }
 
   Future<File> _availableDestination(
