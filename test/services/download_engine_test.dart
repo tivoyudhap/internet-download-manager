@@ -438,9 +438,9 @@ void main() {
             required totalBytes,
             required bytesPerSecond,
           }) {
-            if (!control.isPaused && receivedBytes > 0) {
+            if (!paused.isCompleted && receivedBytes > 0) {
               control.pause();
-              if (!paused.isCompleted) paused.complete();
+              paused.complete();
             }
           },
     );
