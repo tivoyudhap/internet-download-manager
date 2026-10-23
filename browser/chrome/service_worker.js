@@ -3,6 +3,8 @@ const MENU_ID = 'idm-download-with-idm';
 const STREAM_KEY_PREFIX = 'last-stream-';
 const TWITTER_AUDIO_KEY_PREFIX = 'last-twitter-audio-';
 const MEDIA_KEY_PREFIX = 'last-media-';
+const YOUTUBE_VIDEO_KEY_PREFIX = 'last-youtube-video-';
+const YOUTUBE_AUDIO_KEY_PREFIX = 'last-youtube-audio-';
 const MAX_STREAM_AGE_MS = 30 * 60 * 1000;
 const pendingRequests = new Map();
 
@@ -13,14 +15,15 @@ chrome.downloads.onCreated.addListener((item) => {
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
     if (details.tabId < 0) return;
+    const headers = selectedRequestHeaders(details.requestHeaders || []);
     const request = {
-        url: details.url,
-        headers: selectedRequestHeaders(details.requestHeaders || []),
-        pageUrl: details.initiator || '',
-        observedAt: Date.now(),
-        tabId: details.tabId,
-        requestType: details.type,
-      };
+      url: details.url,
+      headers,
+      pageUrl: details.documentUrl || headers.referer || details.initiator || '',
+      observedAt: Date.now(),
+      tabId: details.tabId,
+      requestType: details.type,
+    };
     if (isStreamManifest(details.url)) rememberStream(request);
     if (['media', 'xmlhttprequest', 'other'].includes(details.type)) {
       pendingRequests.set(details.requestId, request);
@@ -49,6 +52,11 @@ chrome.webRequest.onHeadersReceived.addListener(
     if (!request) return;
     if (isManifestType || isStreamManifest(request.url)) {
       rememberStream(request);
+      return;
+    }
+    const youtubeTrack = youtubeTrackType(request, contentType, details);
+    if (youtubeTrack) {
+      rememberYoutubeTrack(request, youtubeTrack);
       return;
     }
     if (isDirectVideoResponse(request, contentType, details)) rememberMedia(request);
@@ -93,14 +101,20 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
       const streamKey = streamStorageKey(info.tabId);
       const audioKey = twitterAudioStorageKey(info.tabId);
       const mediaKey = mediaStorageKey(info.tabId);
-      const [storedStream, storedAudio, storedMedia] = await Promise.all([
+      const youtubeVideoKey = youtubeVideoStorageKey(info.tabId);
+      const youtubeAudioKey = youtubeAudioStorageKey(info.tabId);
+      const [storedStream, storedAudio, storedMedia, storedYoutubeVideo, storedYoutubeAudio] = await Promise.all([
         chrome.storage.session.get(streamKey),
         chrome.storage.session.get(audioKey),
         chrome.storage.session.get(mediaKey),
+        chrome.storage.session.get(youtubeVideoKey),
+        chrome.storage.session.get(youtubeAudioKey),
       ]);
       const stream = storedStream[streamKey];
       const audio = storedAudio[audioKey];
       const media = storedMedia[mediaKey];
+      const youtubeVideo = storedYoutubeVideo[youtubeVideoKey];
+      const youtubeAudio = storedYoutubeAudio[youtubeAudioKey];
       const isRecent = (item) =>
         item && Date.now() - item.observedAt <= MAX_STREAM_AGE_MS;
       const isFacebookPage = isFacebookPageUrl(detectedSource?.pageUrl || info.pageUrl);
@@ -142,6 +156,17 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
         sameTwitterMedia(rawUrl, audio.url)
       ) {
         audioUrl = audio.url;
+      }
+      const pageUrl = detectedSource?.pageUrl || info.pageUrl;
+      const youtubeId = youtubeVideoId(pageUrl);
+      if (isRecent(youtubeVideo) && youtubeVideo.videoId === youtubeId) {
+        rawUrl = youtubeVideo.url;
+        isStream = true;
+        headers = { ...(youtubeVideo.headers || {}) };
+        if (pageUrl && !headers.referer) headers.referer = pageUrl;
+        if (isRecent(youtubeAudio) && youtubeAudio.videoId === youtubeId) {
+          audioUrl = youtubeAudio.url;
+        }
       }
     }
   }
@@ -185,16 +210,22 @@ async function handleFloatingVideoDownload(source, tabId, senderPageUrl) {
     const streamKey = streamStorageKey(tabId);
     const audioKey = twitterAudioStorageKey(tabId);
     const mediaKey = mediaStorageKey(tabId);
-    const [storedStream, storedMedia, storedAudio] = await Promise.all([
+    const youtubeVideoKey = youtubeVideoStorageKey(tabId);
+    const youtubeAudioKey = youtubeAudioStorageKey(tabId);
+    const [storedStream, storedMedia, storedAudio, storedYoutubeVideo, storedYoutubeAudio] = await Promise.all([
       chrome.storage.session.get(streamKey),
       chrome.storage.session.get(mediaKey),
       chrome.storage.session.get(audioKey),
+      chrome.storage.session.get(youtubeVideoKey),
+      chrome.storage.session.get(youtubeAudioKey),
     ]);
     const [stream, media, audio] = [
       storedStream[streamKey],
       storedMedia[mediaKey],
       storedAudio[audioKey],
     ];
+    const youtubeVideo = storedYoutubeVideo[youtubeVideoKey];
+    const youtubeAudio = storedYoutubeAudio[youtubeAudioKey];
     const isFacebookPage = isFacebookPageUrl(source?.pageUrl || senderPageUrl);
     const candidates = isFacebookPage ? [] : [stream, media];
     const isRecent = (item) =>
@@ -238,6 +269,17 @@ async function handleFloatingVideoDownload(source, tabId, senderPageUrl) {
       sameTwitterMedia(rawUrl, audio.url)
     ) {
       audioUrl = audio.url;
+    }
+    const youtubeId = youtubeVideoId(source?.pageUrl || senderPageUrl);
+    if (isRecent(youtubeVideo) && youtubeVideo.videoId === youtubeId) {
+      rawUrl = youtubeVideo.url;
+      isStream = true;
+      headers = { ...(youtubeVideo.headers || {}) };
+      const pageUrl = source?.pageUrl || senderPageUrl;
+      if (pageUrl && !headers.referer) headers.referer = pageUrl;
+      if (isRecent(youtubeAudio) && youtubeAudio.videoId === youtubeId) {
+        audioUrl = youtubeAudio.url;
+      }
     }
   }
   if (source?.pageUrl && !headers.referer) headers.referer = source.pageUrl;
@@ -374,6 +416,14 @@ function twitterAudioStorageKey(tabId) {
 
 function mediaStorageKey(tabId) {
   return `${MEDIA_KEY_PREFIX}${tabId}`;
+}
+
+function youtubeVideoStorageKey(tabId) {
+  return `${YOUTUBE_VIDEO_KEY_PREFIX}${tabId}`;
+}
+
+function youtubeAudioStorageKey(tabId) {
+  return `${YOUTUBE_AUDIO_KEY_PREFIX}${tabId}`;
 }
 
 async function readVideoSource(tabId, frameId) {
@@ -633,6 +683,72 @@ function rememberMedia(request) {
   const { tabId, requestType, ...media } = request;
   media.kind = 'media';
   void chrome.storage.session.set({ [key]: media });
+}
+
+function youtubeTrackType(request, contentType, details) {
+  if (request.requestType !== 'media') return null;
+  const mimeType = typeof contentType === 'string' ? contentType : '';
+  const track = mimeType === 'video/mp4'
+    ? 'video'
+    : mimeType === 'audio/mp4'
+      ? 'audio'
+      : null;
+  if (!track) return null;
+  try {
+    const url = new URL(request.url);
+    const range = url.searchParams.get('range')?.replace(/;$/, '');
+    if (range) {
+      const fullRange = /^0-(\d*)$/.exec(range);
+      const contentLength = Number(url.searchParams.get('clen'));
+      const end = fullRange?.[1] ? Number(fullRange[1]) : null;
+      if (
+        !fullRange ||
+        !Number.isFinite(contentLength) ||
+        contentLength <= 0 ||
+        (end !== null && end + 1 < contentLength && end < contentLength)
+      ) return null;
+      url.searchParams.delete('range');
+      request.url = url.href;
+    }
+    if (
+      !url.hostname.endsWith('.googlevideo.com') ||
+      url.pathname !== '/videoplayback' ||
+      url.searchParams.has('sq') ||
+      !youtubeVideoId(request.pageUrl)
+    ) return null;
+    if (![200, 206].includes(details.statusCode)) return null;
+    return track;
+  } catch (_) {
+    return null;
+  }
+}
+
+function rememberYoutubeTrack(request, track) {
+  const key = track === 'audio'
+    ? youtubeAudioStorageKey(request.tabId)
+    : youtubeVideoStorageKey(request.tabId);
+  const { tabId, requestType, ...media } = request;
+  media.kind = 'media';
+  media.track = track;
+  media.videoId = youtubeVideoId(request.pageUrl);
+  void chrome.storage.session.set({ [key]: media });
+}
+
+function youtubeVideoId(value) {
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (host !== 'youtube.com' && !host.endsWith('.youtube.com') && host !== 'youtu.be') {
+      return null;
+    }
+    const queryId = url.searchParams.get('v');
+    if (queryId) return queryId;
+    const match = /^\/(?:shorts|embed|live)\/([^/?]+)/i.exec(url.pathname);
+    if (match) return match[1];
+    return host === 'youtu.be' ? url.pathname.split('/').filter(Boolean)[0] || null : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 function isDirectVideoResponse(request, contentType, details) {

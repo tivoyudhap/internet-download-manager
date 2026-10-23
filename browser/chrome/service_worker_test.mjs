@@ -670,3 +670,118 @@ test('does not intercept extension, incognito, completed, or non-HTTP downloads'
     assert.equal(worker.downloadOperations.length, 0);
   }
 });
+
+test('pairs YouTube MP4 video and audio tracks captured as byte-range requests', async () => {
+  const worker = loadWorker();
+  const pageUrl = 'https://www.youtube.com/watch?v=WcRBOAwlvxk';
+  const captureTrack = (requestId, url, mimeType) => {
+    worker.listeners.beforeSendHeaders[0]({
+      requestId,
+      tabId: 101,
+      type: 'media',
+      url,
+      initiator: 'https://www.youtube.com',
+      documentUrl: pageUrl,
+      requestHeaders: [
+        { name: 'Referer', value: pageUrl },
+        { name: 'User-Agent', value: 'Chrome test agent' },
+        { name: 'Range', value: 'bytes=0-999' },
+      ],
+    });
+    worker.listeners.headersReceived[0]({
+      requestId,
+      tabId: 101,
+      statusCode: 206,
+      responseHeaders: [
+        { name: 'content-type', value: mimeType },
+        { name: 'content-range', value: 'bytes 0-999/100000' },
+      ],
+    });
+  };
+
+  captureTrack(
+    'yt-video',
+    'https://rr1---sn.googlevideo.com/videoplayback?itag=137&id=video',
+    'video/mp4',
+  );
+  captureTrack(
+    'yt-audio',
+    'https://rr1---sn.googlevideo.com/videoplayback?itag=140&id=audio',
+    'audio/mp4',
+  );
+
+  worker.listeners.runtimeMessage({
+    type: 'idm_download_video',
+    source: null,
+  }, { tab: { id: 101, url: pageUrl } }, () => {});
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(JSON.parse(JSON.stringify(worker.nativeMessages[0].message)), {
+    type: 'add_download',
+    url: 'https://rr1---sn.googlevideo.com/videoplayback?itag=137&id=video',
+    isStream: true,
+    headers: {
+      referer: pageUrl,
+      'user-agent': 'Chrome test agent',
+    },
+    audioUrl: 'https://rr1---sn.googlevideo.com/videoplayback?itag=140&id=audio',
+  });
+});
+
+test('removes a full-resource YouTube range query but ignores partial URL ranges', async () => {
+  const worker = loadWorker();
+  const pageUrl = 'https://www.youtube.com/watch?v=WcRBOAwlvxk';
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'yt-full-range',
+    tabId: 103,
+    type: 'media',
+    url: 'https://rr1---sn.googlevideo.com/videoplayback?itag=137&range=0-100000&clen=100000',
+    documentUrl: pageUrl,
+    requestHeaders: [],
+  });
+  worker.listeners.headersReceived[0]({
+    requestId: 'yt-full-range',
+    tabId: 103,
+    statusCode: 206,
+    responseHeaders: [
+      { name: 'content-type', value: 'video/mp4' },
+      { name: 'content-range', value: 'bytes 0-999/100000' },
+    ],
+  });
+
+  assert.equal(
+    worker.session['last-youtube-video-103'].url,
+    'https://rr1---sn.googlevideo.com/videoplayback?itag=137&clen=100000',
+  );
+});
+
+test('does not treat YouTube range or live segments as complete media tracks', async () => {
+  const worker = loadWorker();
+  const pageUrl = 'https://www.youtube.com/watch?v=WcRBOAwlvxk';
+  for (const [requestId, url] of [
+    ['yt-range', 'https://rr1---sn.googlevideo.com/videoplayback?itag=137&range=0-999'],
+    ['yt-live-segment', 'https://rr1---sn.googlevideo.com/videoplayback?itag=137&sq=9'],
+    ['not-googlevideo', 'https://cdn.example.com/videoplayback?itag=137'],
+  ]) {
+    worker.listeners.beforeSendHeaders[0]({
+      requestId,
+      tabId: 102,
+      type: 'media',
+      url,
+      initiator: 'https://www.youtube.com',
+      documentUrl: pageUrl,
+      requestHeaders: [],
+    });
+    worker.listeners.headersReceived[0]({
+      requestId,
+      tabId: 102,
+      statusCode: 206,
+      responseHeaders: [
+        { name: 'content-type', value: 'video/mp4' },
+        { name: 'content-range', value: 'bytes 0-999/100000' },
+      ],
+    });
+  }
+
+  assert.equal(worker.session['last-youtube-video-102'], undefined);
+});
