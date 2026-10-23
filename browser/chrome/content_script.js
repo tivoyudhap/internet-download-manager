@@ -118,7 +118,10 @@ function findVideoSource() {
   }
 
   const pageHost = location.hostname.toLowerCase();
-  if (pageHost === 'facebook.com' || pageHost.endsWith('.facebook.com') || pageHost === 'fb.watch') {
+  if (isFacebookPage(pageHost)) {
+    const playableSource = findFacebookPlayableSource();
+    if (playableSource) return playableSource;
+
     const resources = performance.getEntriesByType('resource');
     for (let index = resources.length - 1; index >= 0; index -= 1) {
       const rawUrl = resources[index].name;
@@ -128,14 +131,10 @@ function findVideoSource() {
         const isFacebookMediaHost =
           url.hostname === 'fbcdn.net' || url.hostname.endsWith('.fbcdn.net');
         const isManifest = /\.(m3u8|mpd)$/i.test(path);
-        const isProgressiveVideo = /\.(mp4|m4v|webm|mov)$/i.test(path) &&
-          !url.searchParams.has('bytestart') &&
-          !url.searchParams.has('byteend') &&
-          !/\/(?:init|segment|chunk)(?:\/|[-_.]|$)/i.test(path);
-        if (isFacebookMediaHost && (isManifest || isProgressiveVideo)) {
+        if (isFacebookMediaHost && isManifest) {
           return {
             url: url.href,
-            kind: isManifest ? 'stream' : 'media',
+            kind: 'stream',
             pageUrl: location.href,
           };
         }
@@ -146,6 +145,46 @@ function findVideoSource() {
   }
 
   return null;
+}
+
+function findFacebookPlayableSource() {
+  const candidates = [];
+  const scripts = [...document.querySelectorAll('script')];
+  for (let scriptIndex = 0; scriptIndex < scripts.length; scriptIndex += 1) {
+    const text = scripts[scriptIndex].textContent || '';
+    const pattern = /"playable_url_quality_hd"\s*:\s*"((?:\\.|[^"\\])*)"|"playable_url"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+    for (const match of text.matchAll(pattern)) {
+      try {
+        const value = JSON.parse(`"${match[1] || match[2]}"`);
+        const url = new URL(value);
+        const isFacebookMediaHost =
+          url.hostname === 'fbcdn.net' || url.hostname.endsWith('.fbcdn.net');
+        if (
+          isFacebookMediaHost &&
+          /\.mp4$/i.test(url.pathname) &&
+          !url.searchParams.has('bytestart') &&
+          !url.searchParams.has('byteend')
+        ) {
+          candidates.push({
+            url: url.href,
+            quality: match[1] ? 1 : 0,
+            scriptIndex,
+          });
+        }
+      } catch (_) {
+        // Ignore malformed or non-Facebook embedded media URLs.
+      }
+    }
+  }
+  candidates.sort((a, b) => b.quality - a.quality || b.scriptIndex - a.scriptIndex);
+  const selected = candidates[0];
+  return selected
+    ? { url: selected.url, kind: 'media', pageUrl: location.href }
+    : null;
+}
+
+function isFacebookPage(host) {
+  return host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch';
 }
 
 function normalizeMediaUrl(value) {

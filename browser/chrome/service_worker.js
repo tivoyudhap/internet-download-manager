@@ -99,6 +99,7 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
       const media = storedMedia[mediaKey];
       const isRecent = (item) =>
         item && Date.now() - item.observedAt <= MAX_STREAM_AGE_MS;
+      const isFacebookPage = isFacebookPageUrl(detectedSource?.pageUrl || info.pageUrl);
       let captured;
 
       if (isStream) {
@@ -114,7 +115,8 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
             .sort((a, b) => b.observedAt - a.observedAt)[0];
         }
       } else if (isBlob || !rawUrl) {
-        captured = [stream, media]
+        const candidates = isFacebookPage ? [stream] : [stream, media];
+        captured = candidates
           .filter(isRecent)
           .sort((a, b) => b.observedAt - a.observedAt)[0];
       } else if (isRecent(media) && media.url === rawUrl) {
@@ -164,13 +166,13 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type !== 'idm_download_video') return;
-  handleFloatingVideoDownload(message.source, sender.tab?.id)
+  handleFloatingVideoDownload(message.source, sender.tab?.id, sender.tab?.url)
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, error: String(error) }));
   return true;
 });
 
-async function handleFloatingVideoDownload(source, tabId) {
+async function handleFloatingVideoDownload(source, tabId, senderPageUrl) {
   let rawUrl = source?.url;
   let isStream = source?.kind === 'stream' || isStreamManifest(rawUrl);
   let headers = {};
@@ -189,7 +191,8 @@ async function handleFloatingVideoDownload(source, tabId) {
       storedMedia[mediaKey],
       storedAudio[audioKey],
     ];
-    const candidates = [stream, media];
+    const isFacebookPage = isFacebookPageUrl(source?.pageUrl || senderPageUrl);
+    const candidates = isFacebookPage ? [stream] : [stream, media];
     const isRecent = (item) =>
       item && Date.now() - item.observedAt <= MAX_STREAM_AGE_MS;
     const captured = candidates.find(
@@ -391,7 +394,10 @@ function findVideoSourceInFrame() {
     }
   }
   const pageHost = location.hostname.toLowerCase();
-  if (pageHost === 'facebook.com' || pageHost.endsWith('.facebook.com') || pageHost === 'fb.watch') {
+  if (isFacebookPage(pageHost)) {
+    const playableSource = findFacebookPlayableSource();
+    if (playableSource) return playableSource;
+
     const resources = performance.getEntriesByType('resource');
     for (let index = resources.length - 1; index >= 0; index -= 1) {
       try {
@@ -400,14 +406,10 @@ function findVideoSourceInFrame() {
         const isFacebookMediaHost =
           url.hostname === 'fbcdn.net' || url.hostname.endsWith('.fbcdn.net');
         const isManifest = /\.(m3u8|mpd)$/i.test(path);
-        const isProgressiveVideo = /\.(mp4|m4v|webm|mov)$/i.test(path) &&
-          !url.searchParams.has('bytestart') &&
-          !url.searchParams.has('byteend') &&
-          !/\/(?:init|segment|chunk)(?:\/|[-_.]|$)/i.test(path);
-        if (isFacebookMediaHost && (isManifest || isProgressiveVideo)) {
+        if (isFacebookMediaHost && isManifest) {
           return {
             url: url.href,
-            kind: isManifest ? 'stream' : 'media',
+            kind: 'stream',
             pageUrl: location.href,
           };
         }
@@ -417,6 +419,54 @@ function findVideoSourceInFrame() {
     }
   }
   return null;
+}
+
+function findFacebookPlayableSource() {
+  const candidates = [];
+  const scripts = [...document.querySelectorAll('script')];
+  for (let scriptIndex = 0; scriptIndex < scripts.length; scriptIndex += 1) {
+    const text = scripts[scriptIndex].textContent || '';
+    const pattern = /"playable_url_quality_hd"\s*:\s*"((?:\\.|[^"\\])*)"|"playable_url"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+    for (const match of text.matchAll(pattern)) {
+      try {
+        const value = JSON.parse(`"${match[1] || match[2]}"`);
+        const url = new URL(value);
+        const isFacebookMediaHost =
+          url.hostname === 'fbcdn.net' || url.hostname.endsWith('.fbcdn.net');
+        if (
+          isFacebookMediaHost &&
+          /\.mp4$/i.test(url.pathname) &&
+          !url.searchParams.has('bytestart') &&
+          !url.searchParams.has('byteend')
+        ) {
+          candidates.push({
+            url: url.href,
+            quality: match[1] ? 1 : 0,
+            scriptIndex,
+          });
+        }
+      } catch (_) {
+        // Ignore malformed or non-Facebook embedded media URLs.
+      }
+    }
+  }
+  candidates.sort((a, b) => b.quality - a.quality || b.scriptIndex - a.scriptIndex);
+  const selected = candidates[0];
+  return selected
+    ? { url: selected.url, kind: 'media', pageUrl: location.href }
+    : null;
+}
+
+function isFacebookPage(host) {
+  return host === 'facebook.com' || host.endsWith('.facebook.com') || host === 'fb.watch';
+}
+
+function isFacebookPageUrl(value) {
+  try {
+    return isFacebookPage(new URL(value).hostname.toLowerCase());
+  } catch (_) {
+    return false;
+  }
 }
 
 function rememberStream(request) {
@@ -474,24 +524,11 @@ function rememberMedia(request) {
 function isDirectVideoResponse(request, contentType, details) {
   const mimeType = typeof contentType === 'string' ? contentType : '';
   if (mimeType === 'video/mp2t' || mimeType.includes('iso.segment')) return false;
-  const isFacebookRequest = (() => {
-    try {
-      const host = new URL(request.pageUrl || request.url).hostname.toLowerCase();
-      return host === 'facebook.com' || host.endsWith('.facebook.com') ||
-        host === 'fb.watch' || host === 'fbcdn.net' || host.endsWith('.fbcdn.net');
-    } catch (_) {
-      return false;
-    }
-  })();
   if (mimeType.startsWith('video/')) {
     const contentRange = (details.responseHeaders || [])
       .find((header) => header.name.toLowerCase() === 'content-range')?.value;
     if (details.statusCode === 206 && !isCompleteContentRange(contentRange)) return false;
-    if (request.requestType === 'media') return true;
-    if (!isFacebookRequest || !['xmlhttprequest', 'other'].includes(request.requestType)) {
-      return false;
-    }
-    return details.statusCode === 200 || isCompleteContentRange(contentRange);
+    return request.requestType === 'media';
   }
   if (request.requestType !== 'media') return false;
   try {
