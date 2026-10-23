@@ -291,6 +291,7 @@ class _DownloadsPageState extends State<DownloadsPage> {
             request.url,
             isStream: request.isStream,
             suggestedFileName: request.suggestedFileName,
+            audioUrl: request.audioUrl,
             requestHeaders: request.headers,
           );
           unawaited(_queue.processQueue());

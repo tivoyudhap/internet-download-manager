@@ -67,6 +67,7 @@ class DownloadQueueController extends ChangeNotifier {
     String url, {
     bool isStream = false,
     String? suggestedFileName,
+    String? audioUrl,
     Map<String, String> requestHeaders = const {},
   }) async {
     await load();
@@ -81,6 +82,7 @@ class DownloadQueueController extends ChangeNotifier {
       destinationDirectory,
       isStream: isStream,
       suggestedFileName: suggestedFileName,
+      audioUrl: audioUrl,
       requestHeaders: requestHeaders,
     );
     await _serialize(() async {

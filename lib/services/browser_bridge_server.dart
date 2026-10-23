@@ -12,12 +12,14 @@ class BrowserDownloadRequest {
     required this.url,
     this.isStream = false,
     this.suggestedFileName,
+    this.audioUrl,
     this.headers = const {},
   });
 
   final String url;
   final bool isStream;
   final String? suggestedFileName;
+  final String? audioUrl;
   final Map<String, String> headers;
 }
 
@@ -132,6 +134,18 @@ class BrowserBridgeServer {
       return;
     }
 
+    final audioUrlValue = message['audioUrl'];
+    final audioUrl = audioUrlValue == null
+        ? null
+        : validateDownloadUrl(audioUrlValue);
+    if (audioUrlValue != null && audioUrl == null) {
+      await _respond(request, HttpStatus.badRequest, {
+        'ok': false,
+        'error': 'Only HTTP and HTTPS audio URLs are supported.',
+      });
+      return;
+    }
+
     final headers = _validatedRequestHeaders(message['headers']);
     if (headers == null) {
       await _respond(request, HttpStatus.badRequest, {
@@ -143,6 +157,7 @@ class BrowserBridgeServer {
     final requestData = BrowserDownloadRequest(
       url: url,
       isStream: message['isStream'] == true,
+      audioUrl: audioUrl,
       suggestedFileName: message['fileName'] is String
           ? (message['fileName'] as String).trim()
           : null,

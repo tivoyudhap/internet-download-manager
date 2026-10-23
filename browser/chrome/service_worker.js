@@ -1,6 +1,7 @@
 const NATIVE_HOST = 'com.tivoyudhap.internet_download_manager';
 const MENU_ID = 'idm-download-with-idm';
 const STREAM_KEY_PREFIX = 'last-stream-';
+const TWITTER_AUDIO_KEY_PREFIX = 'last-twitter-audio-';
 const MEDIA_KEY_PREFIX = 'last-media-';
 const MAX_STREAM_AGE_MS = 30 * 60 * 1000;
 const pendingRequests = new Map();
@@ -67,6 +68,7 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
   let rawUrl = info.linkUrl || info.srcUrl;
   let isStream = isStreamManifest(rawUrl);
   let headers = {};
+  let audioUrl;
   let detectedSource;
   if (info.tabId >= 0 && (!rawUrl || rawUrl.startsWith('blob:'))) {
     detectedSource = await readVideoSource(info.tabId, info.frameId);
@@ -85,19 +87,32 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
       ['video', 'audio'].includes(info.mediaType);
     if (wantsCapturedMedia) {
       const streamKey = streamStorageKey(info.tabId);
+      const audioKey = twitterAudioStorageKey(info.tabId);
       const mediaKey = mediaStorageKey(info.tabId);
-      const [storedStream, storedMedia] = await Promise.all([
+      const [storedStream, storedAudio, storedMedia] = await Promise.all([
         chrome.storage.session.get(streamKey),
+        chrome.storage.session.get(audioKey),
         chrome.storage.session.get(mediaKey),
       ]);
       const stream = storedStream[streamKey];
+      const audio = storedAudio[audioKey];
       const media = storedMedia[mediaKey];
       const isRecent = (item) =>
         item && Date.now() - item.observedAt <= MAX_STREAM_AGE_MS;
       let captured;
 
       if (isStream) {
-        if (isRecent(stream) && stream.url === rawUrl) captured = stream;
+        if (isRecent(stream) && stream.url === rawUrl && !isTwitterAudioOnlyManifest(rawUrl)) {
+          captured = stream;
+        } else if (isTwitterAudioOnlyManifest(rawUrl)) {
+          captured = [stream, media]
+            .filter((item) =>
+              isRecent(item) &&
+              !isTwitterAudioOnlyManifest(item.url) &&
+              sameTwitterMedia(rawUrl, item.url),
+            )
+            .sort((a, b) => b.observedAt - a.observedAt)[0];
+        }
       } else if (isBlob || !rawUrl) {
         captured = [stream, media]
           .filter(isRecent)
@@ -114,10 +129,22 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
           headers.referer = captured.pageUrl;
         }
       }
+      if (
+        isStream &&
+        isTwitterVideoManifest(rawUrl) &&
+        isRecent(audio) &&
+        sameTwitterMedia(rawUrl, audio.url)
+      ) {
+        audioUrl = audio.url;
+      }
     }
   }
   if (detectedSource?.pageUrl && !headers.referer) {
     headers.referer = detectedSource.pageUrl;
+  }
+  if (isTwitterAudioOnlyManifest(rawUrl)) {
+    setStatus('!', 'Twitter supplied an audio-only playlist. Replay the video and try again.');
+    return;
   }
   if (!rawUrl || rawUrl.startsWith('blob:')) {
     setStatus(
@@ -132,7 +159,7 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
     return;
   }
 
-  await sendNativeDownload(url, isStream, headers);
+  await sendNativeDownload(url, isStream, headers, audioUrl);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -147,18 +174,46 @@ async function handleFloatingVideoDownload(source, tabId) {
   let rawUrl = source?.url;
   let isStream = source?.kind === 'stream' || isStreamManifest(rawUrl);
   let headers = {};
+  let audioUrl;
   if (Number.isInteger(tabId) && tabId >= 0) {
-    const [storedStream, storedMedia] = await Promise.all([
-      chrome.storage.session.get(streamStorageKey(tabId)),
-      chrome.storage.session.get(mediaStorageKey(tabId)),
+    const streamKey = streamStorageKey(tabId);
+    const audioKey = twitterAudioStorageKey(tabId);
+    const mediaKey = mediaStorageKey(tabId);
+    const [storedStream, storedMedia, storedAudio] = await Promise.all([
+      chrome.storage.session.get(streamKey),
+      chrome.storage.session.get(mediaKey),
+      chrome.storage.session.get(audioKey),
     ]);
-    const candidates = [storedStream[streamStorageKey(tabId)], storedMedia[mediaStorageKey(tabId)]];
+    const [stream, media, audio] = [
+      storedStream[streamKey],
+      storedMedia[mediaKey],
+      storedAudio[audioKey],
+    ];
+    const candidates = [stream, media];
     const isRecent = (item) =>
       item && Date.now() - item.observedAt <= MAX_STREAM_AGE_MS;
-    const captured = candidates.find((item) => isRecent(item) && item.url === rawUrl);
+    const captured = candidates.find(
+      (item) =>
+        isRecent(item) &&
+        item.url === rawUrl &&
+        !isTwitterAudioOnlyManifest(item.url),
+    );
     if (captured) {
       headers = { ...(captured.headers || {}) };
       isStream = captured.kind === 'stream';
+    } else if (isTwitterAudioOnlyManifest(rawUrl)) {
+      const videoCandidate = candidates
+        .filter((item) =>
+          isRecent(item) &&
+          !isTwitterAudioOnlyManifest(item.url) &&
+          sameTwitterMedia(rawUrl, item.url),
+        )
+        .sort((a, b) => b.observedAt - a.observedAt)[0];
+      if (videoCandidate) {
+        rawUrl = videoCandidate.url;
+        isStream = videoCandidate.kind === 'stream';
+        headers = { ...(videoCandidate.headers || {}) };
+      }
     } else if (!rawUrl || rawUrl.startsWith('blob:')) {
       const latest = candidates
         .filter(isRecent)
@@ -169,8 +224,21 @@ async function handleFloatingVideoDownload(source, tabId) {
         headers = { ...(latest.headers || {}) };
       }
     }
+    if (
+      isStream &&
+      isTwitterVideoManifest(rawUrl) &&
+      isRecent(audio) &&
+      sameTwitterMedia(rawUrl, audio.url)
+    ) {
+      audioUrl = audio.url;
+    }
   }
   if (source?.pageUrl && !headers.referer) headers.referer = source.pageUrl;
+  if (isTwitterAudioOnlyManifest(rawUrl)) {
+    const error = 'Twitter supplied an audio-only playlist. Replay the video and try again.';
+    setStatus('!', error);
+    return { ok: false, error };
+  }
   if (!rawUrl || rawUrl.startsWith('blob:')) {
     const error = `IDM ${chrome.runtime.getManifest().version}: no video source found.`;
     setStatus('!', error);
@@ -182,14 +250,16 @@ async function handleFloatingVideoDownload(source, tabId) {
     setStatus('!', error);
     return { ok: false, error };
   }
-  return sendNativeDownload(url, isStream, headers);
+  return sendNativeDownload(url, isStream, headers, audioUrl);
 }
 
-function sendNativeDownload(url, isStream, headers) {
+function sendNativeDownload(url, isStream, headers, audioUrl) {
   return new Promise((resolve) => {
+    const message = { type: 'add_download', url, isStream, headers };
+    if (audioUrl) message.audioUrl = audioUrl;
     chrome.runtime.sendNativeMessage(
       NATIVE_HOST,
-      { type: 'add_download', url, isStream, headers },
+      message,
       (response) => {
         if (chrome.runtime.lastError) {
           const error = 'Could not connect to IDM. Open the desktop app.';
@@ -234,6 +304,10 @@ function isStreamManifest(value) {
 
 function streamStorageKey(tabId) {
   return `${STREAM_KEY_PREFIX}${tabId}`;
+}
+
+function twitterAudioStorageKey(tabId) {
+  return `${TWITTER_AUDIO_KEY_PREFIX}${tabId}`;
 }
 
 function mediaStorageKey(tabId) {
@@ -320,10 +394,48 @@ function findVideoSourceInFrame() {
 }
 
 function rememberStream(request) {
-  const key = streamStorageKey(request.tabId);
+  const key = isTwitterAudioOnlyManifest(request.url)
+    ? twitterAudioStorageKey(request.tabId)
+    : streamStorageKey(request.tabId);
   const { tabId, requestType, ...stream } = request;
   stream.kind = 'stream';
   void chrome.storage.session.set({ [key]: stream });
+}
+
+function isTwitterAudioOnlyManifest(value) {
+  try {
+    const url = new URL(value);
+    if (url.hostname !== 'video.twimg.com') return false;
+    return /\/(?:aud|audio|mp4a)(?:\/|[-_.]|$)/i.test(url.pathname);
+  } catch (_) {
+    return false;
+  }
+}
+
+function isTwitterVideoManifest(value) {
+  try {
+    const url = new URL(value);
+    return url.hostname === 'video.twimg.com' &&
+      isStreamManifest(value) &&
+      !isTwitterAudioOnlyManifest(value);
+  } catch (_) {
+    return false;
+  }
+}
+
+function sameTwitterMedia(left, right) {
+  const mediaKey = (value) => {
+    try {
+      const url = new URL(value);
+      if (url.hostname !== 'video.twimg.com') return null;
+      const match = /^\/([^/]+\/[^/]+)/.exec(url.pathname);
+      return match?.[1] || null;
+    } catch (_) {
+      return null;
+    }
+  };
+  const leftKey = mediaKey(left);
+  return leftKey !== null && leftKey === mediaKey(right);
 }
 
 function rememberMedia(request) {

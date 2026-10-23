@@ -314,6 +314,63 @@ test('uses the most recently captured HLS manifest from the page context', async
   assert.equal(worker.nativeMessages[0].message.headers.referer, 'https://site.example/watch');
 });
 
+test('pairs captured Twitter video and audio playlists', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-twitter-audio', tabId: 52, type: 'media',
+    url: 'https://video.twimg.com/ext_tw_video/123/pu/pl/mp4a/64000/audio.m3u8',
+    initiator: 'https://x.com/post/123', requestHeaders: [],
+  });
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-twitter-video', tabId: 52, type: 'media',
+    url: 'https://video.twimg.com/ext_tw_video/123/pu/pl/avc1/1280x720/video.m3u8',
+    initiator: 'https://x.com/post/123', requestHeaders: [],
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm', tabId: 52, mediaType: 'video',
+  });
+
+  assert.equal(
+    worker.nativeMessages[0].message.url,
+    'https://video.twimg.com/ext_tw_video/123/pu/pl/avc1/1280x720/video.m3u8',
+  );
+  assert.equal(
+    worker.nativeMessages[0].message.audioUrl,
+    'https://video.twimg.com/ext_tw_video/123/pu/pl/mp4a/64000/audio.m3u8',
+  );
+  assert.equal(worker.nativeMessages[0].message.isStream, true);
+});
+
+test('replaces an explicit Twitter audio playlist with the captured video playlist', async () => {
+  const worker = loadWorker();
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-twitter-audio', tabId: 53, type: 'media',
+    url: 'https://video.twimg.com/ext_tw_video/456/pu/pl/mp4a/64000/audio.m3u8',
+    initiator: 'https://x.com/post/456', requestHeaders: [],
+  });
+  worker.listeners.beforeSendHeaders[0]({
+    requestId: 'r-twitter-video', tabId: 53, type: 'media',
+    url: 'https://video.twimg.com/ext_tw_video/456/pu/pl/avc1/640x360/video.m3u8',
+    initiator: 'https://x.com/post/456', requestHeaders: [],
+  });
+
+  await worker.listeners.clicked({
+    menuItemId: 'idm-download-with-idm', tabId: 53, mediaType: 'video',
+    srcUrl: 'https://video.twimg.com/ext_tw_video/456/pu/pl/mp4a/64000/audio.m3u8',
+  });
+
+  assert.equal(
+    worker.nativeMessages[0].message.url,
+    'https://video.twimg.com/ext_tw_video/456/pu/pl/avc1/640x360/video.m3u8',
+  );
+  assert.equal(
+    worker.nativeMessages[0].message.audioUrl,
+    'https://video.twimg.com/ext_tw_video/456/pu/pl/mp4a/64000/audio.m3u8',
+  );
+  assert.equal(worker.nativeMessages[0].message.isStream, true);
+});
+
 test('uses a video source read from the clicked iframe when no request was captured', async () => {
   const worker = loadWorker({
     videoSource: {

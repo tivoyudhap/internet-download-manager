@@ -18,6 +18,7 @@ class DownloadTask {
     required this.destinationDirectory,
     required this.status,
     required this.createdAt,
+    this.audioUrl,
     this.totalBytes,
     this.receivedBytes = 0,
     this.speedBytesPerSecond = 0,
@@ -32,6 +33,7 @@ class DownloadTask {
   final String destinationDirectory;
   final DownloadStatus status;
   final DateTime createdAt;
+  final String? audioUrl;
   final int? totalBytes;
   final int receivedBytes;
   final double speedBytesPerSecond;
@@ -41,6 +43,7 @@ class DownloadTask {
 
   DownloadTask copyWith({
     String? fileName,
+    String? audioUrl,
     DownloadStatus? status,
     int? totalBytes,
     int? receivedBytes,
@@ -54,6 +57,7 @@ class DownloadTask {
       id: id,
       url: url,
       fileName: fileName ?? this.fileName,
+      audioUrl: audioUrl ?? this.audioUrl,
       destinationDirectory: destinationDirectory,
       status: status ?? this.status,
       createdAt: createdAt,
@@ -73,6 +77,7 @@ class DownloadTask {
     String destinationDirectory, {
     bool isStream = false,
     String? suggestedFileName,
+    String? audioUrl,
     Map<String, String> requestHeaders = const {},
   }) {
     final normalizedUrl = url.trim();
@@ -97,6 +102,7 @@ class DownloadTask {
       id: _newTaskId(),
       url: uri.toString(),
       fileName: name,
+      audioUrl: audioUrl,
       destinationDirectory: destinationDirectory,
       status: DownloadStatus.queued,
       createdAt: DateTime.now(),
@@ -110,6 +116,7 @@ class DownloadTask {
       id: json['id'] as String,
       url: json['url'] as String,
       fileName: json['fileName'] as String,
+      audioUrl: json['audioUrl'] as String?,
       destinationDirectory: json['destinationDirectory'] as String,
       status: DownloadStatus.values.byName(json['status'] as String),
       createdAt: DateTime.parse(json['createdAt'] as String),
@@ -129,6 +136,7 @@ class DownloadTask {
     'id': id,
     'url': url,
     'fileName': fileName,
+    'audioUrl': audioUrl,
     'destinationDirectory': destinationDirectory,
     'status': status.name,
     'createdAt': createdAt.toIso8601String(),

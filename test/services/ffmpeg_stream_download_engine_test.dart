@@ -17,19 +17,21 @@ void main() {
     if (await directory.exists()) await directory.delete(recursive: true);
   });
 
-  DownloadTask task({String fileName = 'video.mkv'}) => DownloadTask(
-    id: 'stream-task',
-    url: 'https://cdn.example.com/master.m3u8?signature=abc',
-    fileName: fileName,
-    destinationDirectory: directory.path,
-    status: DownloadStatus.queued,
-    createdAt: DateTime.utc(2026),
-    isStream: true,
-    requestHeaders: const {
-      'cookie': 'session=secret',
-      'referer': 'https://site.example/watch',
-    },
-  );
+  DownloadTask task({String fileName = 'video.mkv', String? audioUrl}) =>
+      DownloadTask(
+        id: 'stream-task',
+        url: 'https://cdn.example.com/master.m3u8?signature=abc',
+        fileName: fileName,
+        audioUrl: audioUrl,
+        destinationDirectory: directory.path,
+        status: DownloadStatus.queued,
+        createdAt: DateTime.utc(2026),
+        isStream: true,
+        requestHeaders: const {
+          'cookie': 'session=secret',
+          'referer': 'https://site.example/watch',
+        },
+      );
 
   void onProgress({
     required int receivedBytes,
@@ -49,7 +51,10 @@ void main() {
         },
       );
 
-      final result = await engine.download(task(), onProgress: onProgress);
+      final result = await engine.download(
+        task(audioUrl: 'https://cdn.example.com/audio.m3u8?signature=def'),
+        onProgress: onProgress,
+      );
 
       expect(result.fileName, 'video.mp4');
       expect(result.totalBytes, 4);
@@ -63,8 +68,16 @@ void main() {
         receivedArguments,
         contains('https://cdn.example.com/master.m3u8?signature=abc'),
       );
-      expect(receivedArguments, contains('0:v:0?'));
-      expect(receivedArguments, contains('0:a:0?'));
+      expect(
+        receivedArguments,
+        contains('https://cdn.example.com/audio.m3u8?signature=def'),
+      );
+      expect(receivedArguments, containsAll(['-map', '0:v:0?']));
+      expect(receivedArguments, containsAll(['-map', '1:a:0?']));
+      expect(
+        receivedArguments!.where((argument) => argument == '-headers'),
+        hasLength(2),
+      );
       expect(receivedArguments, containsAll(['-movflags', '+faststart']));
       expect(receivedArguments, containsAll(['-f', 'mp4']));
       expect(receivedArguments!.last, endsWith('.part.mp4'));

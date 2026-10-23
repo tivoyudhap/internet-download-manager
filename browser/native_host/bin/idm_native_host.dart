@@ -85,6 +85,7 @@ Future<Map<String, Object?>> _handleMessage(
         'url': url,
         'isStream': message['isStream'] == true,
         'fileName': message['fileName'],
+        'audioUrl': message['audioUrl'],
         'headers': headers,
       }),
     );

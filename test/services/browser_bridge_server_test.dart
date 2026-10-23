@@ -97,6 +97,7 @@ void main() {
         final response = await post('/downloads', {
           'type': 'add_download',
           'url': 'https://cdn.example.com/master.m3u8?sig=abc',
+          'audioUrl': 'https://cdn.example.com/audio.m3u8?sig=def',
           'isStream': true,
           'fileName': 'course video',
           'headers': {
@@ -112,6 +113,10 @@ void main() {
           'https://cdn.example.com/master.m3u8?sig=abc',
         );
         expect(requests.single.isStream, isTrue);
+        expect(
+          requests.single.audioUrl,
+          'https://cdn.example.com/audio.m3u8?sig=def',
+        );
         expect(requests.single.suggestedFileName, 'course video');
         expect(requests.single.headers, {
           'cookie': 'session=secret',
@@ -156,9 +161,15 @@ void main() {
         'type': 'add_download',
         'url': 'file:///tmp/file.zip',
       });
+      final wrongAudioScheme = await post('/downloads', {
+        'type': 'add_download',
+        'url': 'https://example.com/video.m3u8',
+        'audioUrl': 'javascript:alert(1)',
+      });
 
       expect(wrongType.statusCode, HttpStatus.badRequest);
       expect(wrongScheme.statusCode, HttpStatus.badRequest);
+      expect(wrongAudioScheme.statusCode, HttpStatus.badRequest);
       expect(addedUrls, isEmpty);
     });
 

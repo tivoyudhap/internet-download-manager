@@ -755,31 +755,35 @@ class FfmpegStreamDownloadEngine implements DownloadEngine {
       ];
       final inputHeaders = Map<String, String>.of(task.requestHeaders);
       final cookie = inputHeaders.remove('cookie');
-      if (cookie != null && cookie.isNotEmpty) {
-        final host = Uri.parse(task.url).host;
-        final scopedCookies = cookie
-            .split(';')
-            .map((part) => part.trim())
-            .where((part) => part.contains('='))
-            .map((part) => '$part; Domain=$host; Path=/')
-            .join('\n');
-        if (scopedCookies.isNotEmpty) {
-          arguments.addAll(['-cookies', scopedCookies]);
+      void addInput(String url) {
+        if (cookie != null && cookie.isNotEmpty) {
+          final host = Uri.parse(url).host;
+          final scopedCookies = cookie
+              .split(';')
+              .map((part) => part.trim())
+              .where((part) => part.contains('='))
+              .map((part) => '$part; Domain=$host; Path=/')
+              .join('\n');
+          if (scopedCookies.isNotEmpty) {
+            arguments.addAll(['-cookies', scopedCookies]);
+          }
         }
+        if (inputHeaders.isNotEmpty) {
+          final headers = inputHeaders.entries
+              .map((entry) => '${entry.key}: ${entry.value}\r\n')
+              .join();
+          arguments.addAll(['-headers', headers]);
+        }
+        arguments.addAll(['-i', url]);
       }
-      if (inputHeaders.isNotEmpty) {
-        final headers = inputHeaders.entries
-            .map((entry) => '${entry.key}: ${entry.value}\r\n')
-            .join();
-        arguments.addAll(['-headers', headers]);
-      }
+
+      addInput(task.url);
+      if (task.audioUrl != null) addInput(task.audioUrl!);
       arguments.addAll([
-        '-i',
-        task.url,
         '-map',
         '0:v:0?',
         '-map',
-        '0:a:0?',
+        task.audioUrl == null ? '0:a:0?' : '1:a:0?',
         '-c',
         'copy',
         '-movflags',

@@ -75,6 +75,7 @@ void main() {
         destinationDirectory: '/tmp/Downloads',
         status: DownloadStatus.paused,
         createdAt: DateTime.utc(2026, 10, 22, 10),
+        audioUrl: 'https://example.com/audio.m3u8',
         totalBytes: 1024,
         receivedBytes: 512,
         speedBytesPerSecond: 128.5,
@@ -89,6 +90,7 @@ void main() {
       expect(restored.destinationDirectory, task.destinationDirectory);
       expect(restored.status, task.status);
       expect(restored.createdAt, task.createdAt);
+      expect(restored.audioUrl, task.audioUrl);
       expect(restored.totalBytes, task.totalBytes);
       expect(restored.receivedBytes, task.receivedBytes);
       expect(restored.speedBytesPerSecond, task.speedBytesPerSecond);
