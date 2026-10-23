@@ -8,16 +8,26 @@ class AppDelegate: FlutterAppDelegate {
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
 
-    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let item = NSStatusBar.system.statusItem(withLength: 54)
     let trayImage = NSImage(
       systemSymbolName: "arrow.down.circle.fill",
       accessibilityDescription: "Internet Download Manager"
-    ) ?? NSApp.applicationIconImage
-    item.button?.image = trayImage
-    item.button?.image?.isTemplate = true
-    item.button?.title = "IDM"
-    item.button?.imagePosition = .imageLeading
-    item.button?.toolTip = "Internet Download Manager"
+    ) ?? NSApp.applicationIconImage ?? NSImage(size: NSSize(width: 16, height: 16))
+    trayImage.size = NSSize(width: 16, height: 16)
+    trayImage.isTemplate = true
+    if let button = item.button {
+      button.image = trayImage
+      button.imageScaling = .scaleProportionallyDown
+      button.attributedTitle = NSAttributedString(
+        string: " IDM",
+        attributes: [
+          .foregroundColor: NSColor.labelColor,
+          .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+        ]
+      )
+      button.imagePosition = .imageLeading
+      button.toolTip = "Internet Download Manager"
+    }
     item.isVisible = true
 
     let menu = NSMenu()
